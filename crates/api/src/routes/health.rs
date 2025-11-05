@@ -80,9 +80,9 @@ pub async fn version_info(State(state): State<AppState>) -> Json<Value> {
         "platform_api": {
             "cargo_version": cargo_version,
             "git_commit": git_commit,
-            "compose_hash": compose_hash,  // ← Hash du Docker Compose (attesté par TDX)
+            "compose_hash": compose_hash,  // Hash of Docker Compose (attested by TDX)
             "build_time": option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown"),
-            "public_key": public_key_hex,  // ← Clé publique pour vérification
+            "public_key": public_key_hex,  // Public key for verification
         },
         "warning": if compose_hash == "unknown" {
             "Compose hash not available - cannot verify Docker image integrity"

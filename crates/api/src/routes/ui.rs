@@ -140,6 +140,11 @@ pub async fn create_render_link(
     State(state): State<AppState>,
     Json(request): Json<CreateRenderLinkRequest>,
 ) -> Result<Json<CreateRenderLinkResponse>, StatusCode> {
+    // Check if JWT is disabled
+    if state.config.jwt_secret_ui == "disabled-no-jwt" || state.config.jwt_secret_ui.is_empty() {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+    
     let jti = Uuid::new_v4().to_string();
     let expires_at = Utc::now() + Duration::minutes(5);
     
@@ -173,6 +178,11 @@ pub async fn exchange_session(
     headers: HeaderMap,
     Json(request): Json<ExchangeSessionRequest>,
 ) -> Result<Response, StatusCode> {
+    // Check if JWT is disabled
+    if state.config.jwt_secret_ui == "disabled-no-jwt" || state.config.jwt_secret_ui.is_empty() {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+    
     let secret = state.config.jwt_secret_ui.clone();
     let decoding_key = DecodingKey::from_secret(secret.as_bytes());
     

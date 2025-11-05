@@ -141,7 +141,7 @@ impl CapacityMatcher {
 
     /// Check if a pool has sufficient capacity
     pub fn check_pool_capacity(
-        pool: &Pool,
+        _pool: &platform_api_models::Pool,
         capacity: &PoolCapacitySummary,
         requirements: &JobRequirements,
     ) -> bool {

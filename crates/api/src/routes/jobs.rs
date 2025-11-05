@@ -12,12 +12,13 @@ use platform_api_models::{
     ClaimJobRequest, ClaimJobResponse, SubmitResultRequest, 
     JobListResponse, JobStats, JobMetadata
 };
+use platform_api_scheduler::CreateJobRequest;
 use crate::state::AppState;
 
 /// Create jobs router
 pub fn create_router() -> Router<AppState> {
     Router::new()
-        .route("/jobs", get(list_jobs))
+        .route("/jobs", post(create_job).get(list_jobs))
         .route("/jobs/pending", get(get_pending_jobs))
         .route("/jobs/claim", post(claim_job))
         .route("/jobs/:id", get(get_job))
@@ -27,6 +28,20 @@ pub fn create_router() -> Router<AppState> {
         .route("/jobs/:id/fail", post(fail_job))
         .route("/jobs/next", get(get_next_job))
         .route("/jobs/stats", get(get_job_stats))
+}
+
+/// Create a new job
+pub async fn create_job(
+    State(state): State<AppState>,
+    Json(request): Json<CreateJobRequest>,
+) -> Result<Json<JobMetadata>, StatusCode> {
+    let job = state.scheduler.create_job(request).await
+        .map_err(|e| {
+            tracing::error!("Failed to create job: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(job))
 }
 
 /// List jobs with pagination

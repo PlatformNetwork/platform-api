@@ -96,6 +96,41 @@ async fn handle_validator_socket(
                     if let Ok(handshake) = serde_json::from_str::<HandshakeMessage>(&text) {
                         if handshake.msg_type == "handshake" && !awaiting_attestation {
                             info!("Validator {} completed handshake", hotkey);
+                            
+                            // Check if TEE is enforced - skip attestation in dev mode
+                            let tee_enforced = std::env::var("TEE_ENFORCED")
+                                .unwrap_or_else(|_| "true".to_string())
+                                .to_lowercase() == "true";
+                            
+                            if !tee_enforced {
+                                // Dev mode: Skip TDX attestation and authenticate directly
+                                warn!("🔧 DEV MODE: Skipping TDX attestation for validator {}", hotkey);
+                                authenticated = true;
+                                awaiting_attestation = false;
+                                
+                                // Send success acknowledgment
+                                let ack = serde_json::json!({
+                                    "type": "handshake_ack",
+                                    "status": "success",
+                                    "message": "Authenticated (dev mode - attestation skipped)",
+                                    "dev_mode": true
+                                });
+                                
+                                {
+                                    let mut sender = sender_handle.lock().await;
+                                    if let Err(e) = sender.send(axum::extract::ws::Message::Text(
+                                        serde_json::to_string(&ack).unwrap()
+                                    )).await {
+                                        error!("Failed to send ack: {}", e);
+                                        break;
+                                    }
+                                }
+                                
+                                info!("✅ Validator {} authenticated (dev mode)", hotkey);
+                                continue;
+                            }
+                            
+                            // Production mode: Request TDX attestation
                             awaiting_attestation = true;
                             
                             // Generate random challenge for this session

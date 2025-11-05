@@ -80,10 +80,31 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
     let mut new_challenges = std::collections::HashMap::new();
     
     for row in rows {
-        // Parse JSON fields
-        let resources: ChallengeResources = serde_json::from_value(row.resources)?;
-        let ports: Vec<ChallengePort> = serde_json::from_value(row.ports)?;
-        let env: std::collections::BTreeMap<String, String> = serde_json::from_value(row.env)?;
+        // Parse JSON fields with error handling
+        let resources: ChallengeResources = match serde_json::from_value(row.resources.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to parse resources for challenge {}: {}", row.name, e);
+                error!("Resources JSON: {:?}", row.resources);
+                continue; // Skip this challenge if parsing fails
+            }
+        };
+        let ports: Vec<ChallengePort> = match serde_json::from_value(row.ports.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Failed to parse ports for challenge {}: {}", row.name, e);
+                error!("Ports JSON: {:?}", row.ports);
+                continue;
+            }
+        };
+        let env: std::collections::BTreeMap<String, String> = match serde_json::from_value(row.env.clone()) {
+            Ok(e) => e,
+            Err(e) => {
+                error!("Failed to parse env for challenge {}: {}", row.name, e);
+                error!("Env JSON: {:?}", row.env);
+                continue;
+            }
+        };
         
         // Encode compose_yaml to base64 (validator expects base64-encoded compose_yaml)
         let compose_yaml_base64 = general_purpose::STANDARD.encode(&row.compose_yaml);
@@ -131,12 +152,18 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
     }
     
     // Check if there are changes
+    let registry_len_before = registry.len();
     let has_changes = registry.len() != new_challenges.len() || 
                       registry.iter().any(|(hash, _)| !new_challenges.contains_key(hash));
+    
+    info!("🔍 Registry check: before={}, new={}, has_changes={}", registry_len_before, new_challenges.len(), has_changes);
     
     if has_changes {
         info!("🔄 Syncing {} challenges from PostgreSQL to memory", new_challenges.len());
         *registry = new_challenges.clone();
+        info!("✅ Registry updated: {} challenges now in memory (was {})", registry.len(), registry_len_before);
+    } else {
+        info!("📋 No changes detected: {} challenges already in registry", registry.len());
     }
     
     drop(registry);

@@ -98,18 +98,23 @@ pub async fn get_challenge_emissions(
 pub async fn get_active_challenges(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let challenges = state.storage.list_challenges(
-        1,
-        100,
-        Some("active".to_string()),
-        None,
-    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
+    // Use challenge_registry instead of storage.list_challenges
+    // because storage.list_challenges returns empty list (challenges are in memory registry)
+    let challenges = state.list_challenges().await;
+    
+    // Debug: log registry size
+    let registry_size = {
+        let registry = state.challenge_registry.read().await;
+        registry.len()
+    };
+    tracing::info!("📋 get_active_challenges: registry size = {}, challenges returned = {}", registry_size, challenges.len());
+    
     Ok(Json(serde_json::json!({
-        "challenges": challenges.challenges.iter().map(|c| serde_json::json!({
+        "challenges": challenges.iter().map(|c| serde_json::json!({
             "id": c.id,
             "name": c.name,
-            "status": c.status,
+            "compose_hash": c.compose_hash,
+            "status": "Active", // All challenges in registry are considered active
         })).collect::<Vec<_>>()
     })))
 }

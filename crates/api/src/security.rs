@@ -3,38 +3,49 @@ use ed25519_dalek::{SigningKey, Signer, VerifyingKey, Verifier};
 use sha2::{Sha256, Digest};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use crate::compose_hash;
 
 pub struct PlatformSecurity {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,
-    compose_hash: String,  // ← Hash du Docker Compose file (attesté par TDX)
+    compose_hash: String,  // Hash of Docker Compose file (attested by TDX)
 }
 
 impl PlatformSecurity {
     pub fn new() -> Result<Self> {
-        // Initialize with compose_hash from environment or fallback
-        // Compose hash can be obtained from TDX attestation via init_from_tdx()
-        let compose_hash = std::env::var("COMPOSE_HASH")
-            .unwrap_or_else(|_| "unknown".to_string());
+        // Calculate compose hash from docker-compose.yml file
+        // Fail fast if compose file cannot be found or read
+        let compose_hash = compose_hash::get_compose_hash_with_env_mode()
+            .context("Failed to calculate compose hash from docker-compose.yml. Please ensure COMPOSE_FILE environment variable is set or docker-compose.yml exists in the current directory.")?;
         
         Self::new_with_compose_hash(&compose_hash)
     }
     
-    /// Initialize from TDX attestation (call this at startup for real attestation)
+    /// Initialize from TDX attestation or calculated compose hash (call this at startup)
     pub async fn init_from_tdx() -> Result<Self> {
-        // Try to get compose_hash from TDX attestation first
-        let compose_hash = match Self::get_compose_hash_from_dstack().await {
-            Ok(hash) => {
-                tracing::info!("✅ Got compose_hash from TDX attestation: {}", hash);
-                hash
+        // Check if we're in a TDX CVM environment
+        let tee_enforced = std::env::var("TEE_ENFORCED").unwrap_or_else(|_| "false".to_string()) == "true";
+        let dev_mode = std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
+        
+        let compose_hash = if tee_enforced && !dev_mode {
+            // In production with TEE enforced, try to get compose_hash from TDX attestation
+            match Self::get_compose_hash_from_dstack().await {
+                Ok(hash) => {
+                    tracing::info!("Got compose_hash from TDX attestation: {}", hash);
+                    hash
+                }
+                Err(e) => {
+                    // Fail fast in production - no fallback allowed
+                    return Err(anyhow::anyhow!(
+                        "Security error: Cannot get compose_hash from TDX attestation in production mode. Error: {}. Please ensure TEE_ENFORCED=true only when running in TDX CVM.",
+                        e
+                    ));
+                }
             }
-            Err(e) => {
-                // Fallback to environment variable or "unknown"
-                let fallback = std::env::var("COMPOSE_HASH")
-                    .unwrap_or_else(|_| "unknown".to_string());
-                tracing::warn!("⚠️  Could not get compose_hash from TDX: {}. Using: {}", e, fallback);
-                fallback
-            }
+        } else {
+            // In dev mode or when TEE is not enforced, calculate from docker-compose.yml
+            compose_hash::get_compose_hash_with_env_mode()
+                .context("Failed to calculate compose hash from docker-compose.yml. Please ensure COMPOSE_FILE environment variable is set or docker-compose.yml exists.")?
         };
         
         Self::new_with_compose_hash(&compose_hash)
@@ -47,7 +58,7 @@ impl PlatformSecurity {
         let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         
-        tracing::info!("🔑 Generated security keys from compose_hash");
+        tracing::info!("Generated security keys from compose_hash");
         tracing::info!("   Compose hash: {}", compose_hash);
         tracing::info!("   Public key: {}", hex::encode(verifying_key.to_bytes()));
         

@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     let config = load_config(&args.config)?;
     
     // Create application state
-    let mut state = AppState::new(config.clone()).await?;
+    let state = AppState::new(config.clone()).await?;
 
     // Initialize security with TDX attestation
     let state = state.init_security_from_tdx().await?;
@@ -105,25 +105,71 @@ async fn main() -> Result<()> {
     
     // Check if TLS is enabled
     if let (Some(cert_path), Some(key_path)) = (args.tls_cert, args.tls_key) {
-        info!("🔒 Starting HTTPS server on {}", addr);
+        info!("Starting HTTPS server on {}", addr);
         serve_https(app, addr, &cert_path, &key_path).await?;
     } else {
-        info!("🌐 Starting HTTP server on {}", addr);
-    let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+        info!("Starting HTTP server on {}", addr);
+        let listener = TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
     }
 
     Ok(())
 }
 
-fn load_config(path: &str) -> Result<AppConfig> {
+fn load_config(_path: &str) -> Result<AppConfig> {
     // For now, return a default configuration
     // In a real implementation, this would load from the specified file
+    
+    // Check if we're in dev mode
+    let dev_mode = env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
+    let env_mode = env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| {
+        if dev_mode {
+            "dev".to_string()
+        } else {
+            "prod".to_string()
+        }
+    });
+    
+    // Generate random secrets in dev mode (not hardcoded)
+    // In production, fail fast if secrets are missing
+    let generate_random_key = || {
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key);
+        hex::encode(key)
+    };
+    
+    let storage_key = env::var("STORAGE_ENCRYPTION_KEY")
+        .unwrap_or_else(|_| {
+            if dev_mode || env_mode == "dev" {
+                // Generate random key in dev mode
+                let key = generate_random_key();
+                tracing::info!("DEV MODE: Generated random STORAGE_ENCRYPTION_KEY");
+                key
+            } else {
+                // Fail fast in production
+                panic!("Security error: STORAGE_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
+            }
+        });
+    
+    let kbs_key = env::var("KBS_ENCRYPTION_KEY")
+        .unwrap_or_else(|_| {
+            if dev_mode || env_mode == "dev" {
+                // Generate random key in dev mode
+                let key = generate_random_key();
+                tracing::info!("DEV MODE: Generated random KBS_ENCRYPTION_KEY");
+                key
+            } else {
+                // Fail fast in production
+                panic!("Security error: KBS_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
+            }
+        });
+    
     Ok(AppConfig {
         server_port: 3000,
         server_host: "0.0.0.0".to_string(),
         jwt_secret_ui: env::var("JWT_SECRET_UI")
-            .expect("JWT_SECRET_UI environment variable must be set for production"),
+            .unwrap_or_else(|_| "disabled-no-jwt".to_string()),
         database_url: env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgresql://localhost/platform".to_string()),
         storage_config: platform_api_storage::StorageConfig {
@@ -132,8 +178,7 @@ fn load_config(path: &str) -> Result<AppConfig> {
             s3_bucket: Some("platform-storage".to_string()),
             s3_region: Some("us-east-1".to_string()),
             minio_endpoint: None,
-            encryption_key: env::var("STORAGE_ENCRYPTION_KEY")
-                .expect("STORAGE_ENCRYPTION_KEY environment variable must be set for production"),
+            encryption_key: storage_key,
         },
         attestation_config: platform_api_attestation::AttestationConfig {
             dcap_enabled: true,
@@ -142,7 +187,7 @@ fn load_config(path: &str) -> Result<AppConfig> {
             policy_store_path: "/tmp/policies".to_string(),
             verification_timeout: 30,
             jwt_secret: env::var("JWT_SECRET")
-                .expect("JWT_SECRET environment variable must be set for production"),
+                .unwrap_or_else(|_| "disabled-no-jwt".to_string()),
             session_timeout: 3600,
             verifier_url: Some("http://localhost:8080".to_string()),
         },
@@ -151,8 +196,7 @@ fn load_config(path: &str) -> Result<AppConfig> {
             key_size: 256,
             session_timeout: 3600,
             max_sessions: 1000,
-            encryption_key: env::var("KBS_ENCRYPTION_KEY")
-                .expect("KBS_ENCRYPTION_KEY environment variable must be set for production"),
+            encryption_key: kbs_key,
         },
         scheduler_config: platform_api_scheduler::SchedulerConfig {
             max_concurrent_jobs: 100,

@@ -15,6 +15,7 @@ pub mod middleware;
 pub mod routes;
 pub mod state;
 pub mod security;
+pub mod compose_hash;
 pub mod background;
 pub mod challenge_migrations;
 pub mod challenge_runner;
@@ -34,11 +35,13 @@ pub fn create_router(state: AppState) -> Router {
         .merge(routes::jobs::create_router())
         .merge(routes::attestation::create_router())
         .merge(routes::results::create_router())
-        .merge(routes::config::create_router())
+        // NOTE: Config routes for subnet config/backups are disabled - functionality not implemented in storage backend
+        // .merge(routes::config::create_router())
         .merge(routes::emissions::create_router())
         .merge(routes::health::create_router())
-        .merge(routes::pools::create_router())
-        .merge(routes::nodes::create_router())
+        // NOTE: Pools and nodes routes are disabled - functionality not implemented in storage backend
+        // .merge(routes::pools::create_router())
+        // .merge(routes::nodes::create_router())
         .merge(routes::ui::create_router())
         .merge(routes::artifacts::create_router())
         .merge(routes::websocket::create_router())

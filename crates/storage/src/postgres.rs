@@ -223,7 +223,7 @@ impl StorageBackend for PostgresStorageBackend {
     }
 
     async fn create_emission_schedule(&self, request: CreateEmissionScheduleRequest) -> Result<EmissionSchedule> {
-        // Pour les émissions, on met à jour l'emission_share du challenge
+        // For emissions, update the challenge's emission_share
         if let Some(challenge_id) = request.challenge_id {
             // Validate emission_rate is between 0 and 1
             if request.emission_rate < 0.0 || request.emission_rate > 1.0 {
@@ -269,7 +269,7 @@ impl StorageBackend for PostgresStorageBackend {
     }
 
     async fn distribute_emission(&self, _id: Uuid, _request: DistributeEmissionRequest) -> Result<()> {
-        // Distribution est gérée par le mécanisme de weights, donc on log juste
+        // Distribution is handled by the weights mechanism, so we just log
         info!("Emission distribution requested for schedule {}, but distribution is handled automatically through weight aggregation", _id);
         Ok(())
     }

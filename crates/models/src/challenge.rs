@@ -52,13 +52,54 @@ pub struct HarnessConfig {
     pub environment: BTreeMap<String, String>,
 }
 
+impl Default for HarnessConfig {
+    fn default() -> Self {
+        Self {
+            runtime: RuntimeType::Docker,
+            resources: ResourceLimits {
+                cpu_cores: 1,
+                memory_mb: 1024,
+                disk_mb: 10240,
+                network_enabled: true,
+            },
+            timeout: 3600,
+            environment: BTreeMap::new(),
+        }
+    }
+}
+
 /// Runtime type for execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RuntimeType {
     Standard,
+    Docker,
     Sgx,
     Sev,
     WasmEnclave,
+}
+
+impl From<&str> for RuntimeType {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "docker" => RuntimeType::Docker,
+            "sgx" => RuntimeType::Sgx,
+            "sev" => RuntimeType::Sev,
+            "wasmenclave" | "wasm_enclave" => RuntimeType::WasmEnclave,
+            _ => RuntimeType::Standard,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeType::Standard => write!(f, "standard"),
+            RuntimeType::Docker => write!(f, "docker"),
+            RuntimeType::Sgx => write!(f, "sgx"),
+            RuntimeType::Sev => write!(f, "sev"),
+            RuntimeType::WasmEnclave => write!(f, "wasmenclave"),
+        }
+    }
 }
 
 /// Resource limits for execution

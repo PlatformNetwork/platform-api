@@ -39,6 +39,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+rand = "0.8"
+hex = "0.4"
 
 # Logging
 tracing = { workspace = true }

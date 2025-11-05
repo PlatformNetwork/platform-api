@@ -6,20 +6,25 @@ services:
       context: .
       dockerfile: Dockerfile
       target: platform-api-local
+    # SECURITY: Ports limited to localhost only - services communicate via internal network
+    # Remove ports section entirely if using reverse proxy or load balancer
     ports:
-      - "3000:3000"   # HTTP API
-      - "9090:9090"   # Prometheus metrics
+      - "127.0.0.1:3000:3000"   # HTTP API (localhost only - use reverse proxy in production)
+      - "127.0.0.1:9090:9090"   # Prometheus metrics (localhost only)
     volumes:
       - ./data:/data
     environment:
       # Logging
       - RUST_LOG=info
       
+      # Environment Mode - Required for dev/prod isolation
+      - ENVIRONMENT_MODE=prod
+      
       # TEE Security (CRITICAL for production)
       - TEE_ENFORCED=true
       
-      # Compose hash for TDX attestation
-      - COMPOSE_HASH=production-default-hash
+      # Compose file path (for automatic hash calculation)
+      - COMPOSE_FILE=docker-compose.production.yml
       
       # API Configuration
       - SERVER_HOST=0.0.0.0
@@ -28,9 +33,21 @@ services:
       # Security
       - DEV_MODE=false
       
+      # Database Configuration
+      # NOTE: PostgreSQL is external - provide connection string via DATABASE_URL
+      # Example: postgresql://user:password@host:5432/platform
+      - DATABASE_URL=${DATABASE_URL}
+      
+      # Storage Configuration
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-postgres}
+      - STORAGE_ENCRYPTION_KEY=${STORAGE_ENCRYPTION_KEY}
+      
+      # Key Broker Service Configuration
+      - KBS_ENCRYPTION_KEY=${KBS_ENCRYPTION_KEY}
+      
     restart: unless-stopped
     networks:
-      - platform-network
+      - production-platform-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -39,6 +56,7 @@ services:
       start_period: 40s
 
 networks:
-  platform-network:
+  production-platform-network:
     driver: bridge
+    name: production-platform-network
 

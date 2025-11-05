@@ -115,7 +115,14 @@ impl AppState {
         
         let attestation = Arc::new(AttestationService::new(&config.attestation_config)?);
         let kbs = Arc::new(KeyBrokerService::new(&config.kbs_config)?);
-        let scheduler = Arc::new(SchedulerService::new(&config.scheduler_config)?);
+        
+        // Initialize scheduler with database pool if available
+        let scheduler = if let Some(ref pool) = database_pool {
+            Arc::new(SchedulerService::with_database(&config.scheduler_config, pool.clone())?)
+        } else {
+            Arc::new(SchedulerService::new(&config.scheduler_config)?)
+        };
+        
         let builder = Arc::new(BuilderService::new(&config.builder_config)?);
         let metrics = Arc::new(MetricsService::new(&config.metrics_config)?);
         let artifact_storage = Arc::new(ArtifactStorage::new());
@@ -198,6 +205,11 @@ impl AppState {
     /// List all registered challenges with auto-calculated weights
     pub async fn list_challenges(&self) -> Vec<ChallengeSpec> {
         let registry = self.challenge_registry.read().await;
+        let registry_size = registry.len();
+        tracing::info!("📋 list_challenges: registry contains {} challenges", registry_size);
+        for (hash, challenge) in registry.iter() {
+            tracing::info!("  - {} (hash: {})", challenge.name, hash);
+        }
         let mut challenges: Vec<ChallengeSpec> = registry.values().cloned().collect();
         
         // Group challenges by mechanism_id
