@@ -187,10 +187,16 @@ impl AppState {
 
         // Initialize CHUTES API token from database if available
         let chutes_api_token = Arc::new(tokio::sync::RwLock::new(None));
-        
+
         // Load CHUTES API token from database if pool is available
         if let Some(ref pool) = database_pool {
-            if let Err(e) = Self::load_chutes_api_token(chutes_api_token.clone(), pool.clone(), &config.storage_config.encryption_key).await {
+            if let Err(e) = Self::load_chutes_api_token(
+                chutes_api_token.clone(),
+                pool.clone(),
+                &config.storage_config.encryption_key,
+            )
+            .await
+            {
                 warn!("Failed to load CHUTES API token from database: {}. LLM validation during agent upload will not work.", e);
             }
         }
@@ -401,23 +407,21 @@ impl AppState {
         pool: Arc<PgPool>,
         encryption_key: &str,
     ) -> anyhow::Result<()> {
-        use platform_api_storage::encrypt_artifact;
         use platform_api_storage::decrypt_artifact;
+        use platform_api_storage::encrypt_artifact;
         use platform_api_storage::EncryptedArtifact;
 
         // Try to load from database
-        let row = sqlx::query(
-            "SELECT encrypted_value, nonce FROM platform_config WHERE key = $1"
-        )
-        .bind("chutes_api_token")
-        .fetch_optional(&*pool)
-        .await?;
+        let row = sqlx::query("SELECT encrypted_value, nonce FROM platform_config WHERE key = $1")
+            .bind("chutes_api_token")
+            .fetch_optional(&*pool)
+            .await?;
 
         if let Some(row) = row {
             // Decrypt the token
             let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
             let nonce: Vec<u8> = row.try_get("nonce")?;
-            
+
             let encrypted = EncryptedArtifact {
                 ciphertext: encrypted_value,
                 nonce: nonce,
@@ -434,13 +438,17 @@ impl AppState {
                 // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
                 encryption_key.as_bytes().to_vec()
             };
-            
+
             // Ensure key is exactly 32 bytes for AES-256-GCM
             if key_bytes.len() != 32 {
-                return Err(anyhow::anyhow!("Encryption key must be 32 bytes (got {} bytes)", key_bytes.len()));
+                return Err(anyhow::anyhow!(
+                    "Encryption key must be 32 bytes (got {} bytes)",
+                    key_bytes.len()
+                ));
             }
-            
-            let key_array: [u8; 32] = key_bytes.try_into()
+
+            let key_array: [u8; 32] = key_bytes
+                .try_into()
                 .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
 
             let decrypted_bytes = decrypt_artifact(&encrypted, &key_array)?;
@@ -487,7 +495,7 @@ impl AppState {
 
         // Load all env vars for this challenge
         let rows = sqlx::query(
-            "SELECT key, encrypted_value, nonce FROM challenge_env_vars WHERE compose_hash = $1"
+            "SELECT key, encrypted_value, nonce FROM challenge_env_vars WHERE compose_hash = $1",
         )
         .bind(compose_hash)
         .fetch_all(&**pool)
@@ -504,20 +512,24 @@ impl AppState {
             // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
             encryption_key.as_bytes().to_vec()
         };
-        
+
         // Ensure key is exactly 32 bytes for AES-256-GCM
         if key_bytes.len() != 32 {
-            return Err(anyhow::anyhow!("Encryption key must be 32 bytes (got {} bytes)", key_bytes.len()));
+            return Err(anyhow::anyhow!(
+                "Encryption key must be 32 bytes (got {} bytes)",
+                key_bytes.len()
+            ));
         }
-        
-        let key_array: [u8; 32] = key_bytes.try_into()
+
+        let key_array: [u8; 32] = key_bytes
+            .try_into()
             .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
 
         for row in rows {
             let env_key: String = row.try_get("key")?;
             let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
             let nonce: Vec<u8> = row.try_get("nonce")?;
-            
+
             let encrypted = EncryptedArtifact {
                 ciphertext: encrypted_value,
                 nonce: nonce,
@@ -568,13 +580,17 @@ impl AppState {
             // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
             encryption_key.as_bytes().to_vec()
         };
-        
+
         // Ensure key is exactly 32 bytes for AES-256-GCM
         if key_bytes.len() != 32 {
-            return Err(anyhow::anyhow!("Encryption key must be 32 bytes (got {} bytes)", key_bytes.len()));
+            return Err(anyhow::anyhow!(
+                "Encryption key must be 32 bytes (got {} bytes)",
+                key_bytes.len()
+            ));
         }
-        
-        let key_array: [u8; 32] = key_bytes.try_into()
+
+        let key_array: [u8; 32] = key_bytes
+            .try_into()
             .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
 
         // Encrypt the value

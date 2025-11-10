@@ -230,6 +230,7 @@ impl QueryValidator {
         }
 
         // Check for SQL keywords (basic list)
+        // Only reject if the identifier is exactly the keyword or contains it as a whole word
         let sql_keywords = [
             "SELECT",
             "INSERT",
@@ -250,12 +251,31 @@ impl QueryValidator {
         ];
 
         let upper = identifier.to_uppercase();
-        if sql_keywords.iter().any(|&keyword| upper.contains(keyword)) {
-            return Err(anyhow::anyhow!(
-                "SQL keyword detected in {}: {}",
-                context,
-                identifier
-            ));
+
+        // Check if identifier contains a keyword as a whole word (delimited by underscore, dot, or start/end)
+        // This prevents "updated_at" from being rejected while still catching "UPDATE" or "table_UPDATE_column"
+        for keyword in &sql_keywords {
+            // Check if keyword appears as a whole word:
+            // - Exactly matches the keyword
+            // - At start followed by underscore or dot
+            // - At end preceded by underscore or dot
+            // - Surrounded by underscores or dots
+            if upper == *keyword
+                || upper.starts_with(&format!("{}_", keyword))
+                || upper.starts_with(&format!("{}.", keyword))
+                || upper.ends_with(&format!("_{}", keyword))
+                || upper.ends_with(&format!(".{}", keyword))
+                || upper.contains(&format!("_{}_", keyword))
+                || upper.contains(&format!("_{}.", keyword))
+                || upper.contains(&format!(".{}_", keyword))
+                || upper.contains(&format!(".{}.", keyword))
+            {
+                return Err(anyhow::anyhow!(
+                    "SQL keyword detected in {}: {}",
+                    context,
+                    identifier
+                ));
+            }
         }
 
         Ok(())

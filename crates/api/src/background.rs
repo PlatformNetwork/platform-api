@@ -198,13 +198,8 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         registry_len_before
     );
 
-    // Track which challenges are new
+    // Track which challenges are new or changed
     let mut new_or_changed = Vec::new();
-    for (hash, _) in &new_challenges {
-        if !registry.contains_key(hash) {
-            new_or_changed.push(hash.clone());
-        }
-    }
 
     // CRITICAL: Clear and rebuild registry to ensure it's in sync
     if !new_challenges.is_empty() {
@@ -212,6 +207,13 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
             "🔄 Force-syncing {} challenges from PostgreSQL to memory",
             new_challenges.len()
         );
+
+        // Track challenges that are truly new (not in registry before clearing)
+        for (hash, _) in &new_challenges {
+            if !registry.contains_key(hash) {
+                new_or_changed.push(hash.clone());
+            }
+        }
 
         // Clear the registry first
         registry.clear();
@@ -221,6 +223,18 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         for (hash, challenge) in new_challenges.iter() {
             registry.insert(hash.clone(), challenge.clone());
             info!("➕ Added to registry: {} (hash: {})", challenge.name, hash);
+        }
+
+        // If we're doing a force-sync and no challenges were marked as new,
+        // it means they were already in the registry. However, we should still
+        // check if they're running and start them if not. For now, mark all as new/changed
+        // during force-sync to ensure they're started.
+        if new_or_changed.is_empty() {
+            info!("📋 No new challenges detected, but force-sync detected. Checking if challenges need to be started...");
+            // Add all challenges to new_or_changed to ensure they're started
+            for (hash, _) in &new_challenges {
+                new_or_changed.push(hash.clone());
+            }
         }
 
         info!(
@@ -254,7 +268,26 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
     // Auto-start new or changed challenges if ChallengeRunner is available
     // Only start challenges that we confirmed exist in the database
     if let Some(runner) = &state.challenge_runner {
+        // Filter out challenges that are already running
+        let mut challenges_to_start = Vec::new();
+        let running_challenges = runner.list_running_challenges().await;
+        let running_compose_hashes: std::collections::HashSet<String> = running_challenges
+            .iter()
+            .map(|c| c.compose_hash.clone())
+            .collect();
+
         for compose_hash in new_or_changed {
+            if !running_compose_hashes.contains(&compose_hash) {
+                challenges_to_start.push(compose_hash);
+            } else {
+                info!(
+                    compose_hash = &compose_hash,
+                    "Challenge already running, skipping auto-start"
+                );
+            }
+        }
+
+        for compose_hash in challenges_to_start {
             // Verify the challenge still exists in new_challenges (which came from DB)
             if let Some(challenge_spec) = new_challenges.get(&compose_hash) {
                 info!(
@@ -264,7 +297,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
                 // Use the challenge_spec we already have to avoid re-querying
                 // Note: Errors here are logged but don't prevent the challenge from being marked as failed
                 // Some errors (like migration timeouts, schema check failures) are non-fatal
-                
+
                 // Load environment variables for this challenge
                 let env_vars = match state.load_challenge_env_vars(&compose_hash).await {
                     Ok(vars) => {
@@ -287,9 +320,13 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
                         None
                     }
                 };
-                
+
                 match runner
-                    .run_challenge_by_compose_hash_with_spec(&compose_hash, Some(challenge_spec), env_vars)
+                    .run_challenge_by_compose_hash_with_spec(
+                        &compose_hash,
+                        Some(challenge_spec),
+                        env_vars,
+                    )
                     .await
                 {
                     Ok(_) => {

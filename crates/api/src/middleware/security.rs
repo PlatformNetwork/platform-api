@@ -27,27 +27,32 @@ pub async fn jwt_auth_middleware(
 ) -> Result<Response, StatusCode> {
     let path = req.uri().path();
     let method = req.method().clone();
-    
+
     // ALL GET requests are public (no authentication required)
     // This includes: /challenges, /jobs, /health, /ui/*, etc.
     if method == axum::http::Method::GET {
         tracing::debug!("✅ GET request (public): {}", path);
         return Ok(next.run(req).await);
     }
-    
+
     // For non-GET requests, check if JWT is enforced
     let jwt_enforced =
         std::env::var("JWT_ENFORCED").unwrap_or_else(|_| "true".to_string()) == "true";
 
     // Additional public endpoints for non-GET requests
     let is_public_endpoint = path == "/health" || path.starts_with("/ui/");
-    
+
     if is_public_endpoint {
         tracing::debug!("✅ Public endpoint (non-GET): {}", path);
         return Ok(next.run(req).await);
     }
 
-    tracing::debug!("🔒 Protected endpoint: {} {} (JWT enforced: {})", method, path, jwt_enforced);
+    tracing::debug!(
+        "🔒 Protected endpoint: {} {} (JWT enforced: {})",
+        method,
+        path,
+        jwt_enforced
+    );
 
     // Extract token from Authorization header
     let auth_header = req
@@ -59,7 +64,11 @@ pub async fn jwt_auth_middleware(
         Some(auth) if auth.starts_with("Bearer ") => &auth[7..],
         _ => {
             if jwt_enforced {
-                tracing::warn!("Missing or invalid Authorization header for {} {}", method, path);
+                tracing::warn!(
+                    "Missing or invalid Authorization header for {} {}",
+                    method,
+                    path
+                );
                 return Err(StatusCode::UNAUTHORIZED);
             } else {
                 // Allow request without JWT when not enforced
@@ -136,15 +145,15 @@ pub async fn attestation_middleware(
 
     let path = req.uri().path();
     let method = req.method().clone();
-    
+
     // ALL GET requests are public (no attestation required)
     if method == axum::http::Method::GET {
         return Ok(next.run(req).await);
     }
-    
+
     // Additional public endpoints for non-GET requests
     let is_public_endpoint = path == "/health" || path.starts_with("/ui/");
-    
+
     if is_public_endpoint {
         return Ok(next.run(req).await);
     }

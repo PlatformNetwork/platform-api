@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use serde_json::Value;
@@ -160,6 +160,127 @@ async fn verify_miner_signature(
     Ok(miner_hotkey.to_string())
 }
 
+/// Check if an endpoint is a public read-only endpoint that doesn't require signature
+fn is_public_readonly_endpoint(route_name: &str) -> bool {
+    matches!(route_name, "get_agent_status" | "list_agents")
+}
+
+/// Proxy GET request to challenge CVM
+async fn proxy_get_to_challenge(
+    state: &AppState,
+    challenge_name: &str,
+    route_name: &str,
+    query_params: &str,
+    verified_hotkey: Option<&str>,
+) -> Result<Response, SignatureError> {
+    // Get challenge runner from state
+    let challenge_runner = state
+        .challenge_runner
+        .as_ref()
+        .ok_or_else(|| SignatureError::ChallengeNotFound)?;
+
+    // Find challenge by name or ID using public method
+    let running_challenges = challenge_runner.list_running_challenges().await;
+
+    // Search for challenge by name or challenge_id
+    let challenge_instance = running_challenges
+        .iter()
+        .find(|inst| inst.name == challenge_name || inst.challenge_id == challenge_name);
+
+    if challenge_instance.is_none() {
+        warn!(
+            challenge_name = challenge_name,
+            "Challenge not found or not running"
+        );
+        return Err(SignatureError::ChallengeNotFound);
+    }
+
+    let instance = challenge_instance.unwrap();
+
+    // Get CVM API URL
+    let cvm_api_url = instance
+        .cvm_api_url
+        .as_ref()
+        .ok_or_else(|| SignatureError::CvmUnavailable)?;
+
+    // Build target URL: {cvm_api_url}/sdk/public/{route_name}?{query_params}
+    let target_url = if query_params.is_empty() {
+        format!(
+            "{}/sdk/public/{}",
+            cvm_api_url.trim_end_matches('/'),
+            route_name
+        )
+    } else {
+        format!(
+            "{}/sdk/public/{}?{}",
+            cvm_api_url.trim_end_matches('/'),
+            route_name,
+            query_params
+        )
+    };
+
+    info!(
+        challenge_name = challenge_name,
+        route_name = route_name,
+        target_url = &target_url,
+        "Proxying GET request to challenge CVM"
+    );
+
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true) // Accept self-signed certs from CVMs
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| {
+            error!("Failed to create HTTP client: {}", e);
+            SignatureError::CvmUnavailable
+        })?;
+
+    // Forward GET request to challenge CVM
+    let mut request_builder = client.get(&target_url);
+
+    // Add verified hotkey header if available (for signed requests)
+    if let Some(hotkey) = verified_hotkey {
+        request_builder = request_builder.header("X-Verified-Miner-Hotkey", hotkey);
+    }
+
+    // Add CHUTES API token header if available
+    if let Some(chutes_token) = state.get_chutes_api_token().await {
+        request_builder = request_builder.header("X-CHUTES-API-TOKEN", chutes_token);
+    }
+
+    let response = request_builder.send().await.map_err(|e| {
+        error!(
+            target_url = &target_url,
+            error = %e,
+            "Failed to proxy GET request to challenge CVM"
+        );
+        SignatureError::CvmUnavailable
+    })?;
+
+    // Get response status and body
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        SignatureError::CvmUnavailable
+    })?;
+
+    // Parse JSON body if possible, otherwise return as-is
+    let json_body: Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({ "raw_response": body }));
+
+    // Convert to axum response
+    let axum_response = axum::response::Response::builder()
+        .status(status.as_u16())
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(&json_body).unwrap_or_default(),
+        ))
+        .map_err(|_| SignatureError::CvmUnavailable)?;
+
+    Ok(axum_response)
+}
+
 /// Proxy request to challenge CVM
 async fn proxy_to_challenge(
     state: &AppState,
@@ -237,18 +358,14 @@ async fn proxy_to_challenge(
         warn!("CHUTES API token not available - LLM validation may fail during agent upload");
     }
 
-    let response = request_builder
-        .json(&body_json)
-        .send()
-        .await
-        .map_err(|e| {
-            error!(
-                target_url = &target_url,
-                error = %e,
-                "Failed to proxy request to challenge CVM"
-            );
-            SignatureError::CvmUnavailable
-        })?;
+    let response = request_builder.json(&body_json).send().await.map_err(|e| {
+        error!(
+            target_url = &target_url,
+            error = %e,
+            "Failed to proxy request to challenge CVM"
+        );
+        SignatureError::CvmUnavailable
+    })?;
 
     // Get response status and body
     let status = response.status();
@@ -273,7 +390,43 @@ async fn proxy_to_challenge(
     Ok(axum_response)
 }
 
-/// Handle challenge public route request
+/// Handle challenge public route GET request
+async fn handle_challenge_public_route_get(
+    State(state): State<AppState>,
+    Path((challenge_name, route_name)): Path<(String, String)>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, SignatureError> {
+    // Extract query string from URI
+    let query_string = uri.query().unwrap_or("");
+
+    // Check if this is a public read-only endpoint that doesn't require signature
+    let verified_hotkey = if is_public_readonly_endpoint(&route_name) {
+        // Public read-only endpoint: no signature required
+        info!(
+            route_name = &route_name,
+            "Public read-only endpoint, skipping signature verification"
+        );
+        None
+    } else {
+        // Protected endpoint: verify signature with empty JSON body
+        let empty_body = serde_json::json!({});
+        let hotkey = verify_miner_signature(&headers, &empty_body).await?;
+        Some(hotkey)
+    };
+
+    // Proxy GET request to challenge
+    proxy_get_to_challenge(
+        &state,
+        &challenge_name,
+        &route_name,
+        query_string,
+        verified_hotkey.as_deref(),
+    )
+    .await
+}
+
+/// Handle challenge public route POST request
 async fn handle_challenge_public_route(
     State(state): State<AppState>,
     Path((challenge_name, route_name)): Path<(String, String)>,
@@ -307,6 +460,6 @@ async fn handle_challenge_public_route(
 pub fn create_router() -> Router<AppState> {
     Router::new().route(
         "/api/challenges/:challenge_name/public/:route_name",
-        post(handle_challenge_public_route),
+        get(handle_challenge_public_route_get).post(handle_challenge_public_route),
     )
 }

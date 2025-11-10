@@ -18,14 +18,30 @@ pub struct CvmManager {
     vmm_url: String,
     gateway_url: String,
     http_client: reqwest::Client,
+    mock_mode: bool,
 }
 
 impl CvmManager {
     pub fn new(vmm_url: String, gateway_url: String) -> Self {
+        // Check if mock mode is enabled (for dev environment)
+        let mock_mode = std::env::var("PLATFORM_API_MOCK_VMM")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true"
+            || std::env::var("DEV_MODE")
+                .unwrap_or_else(|_| "false".to_string())
+                .to_lowercase()
+                == "true";
+
+        if mock_mode {
+            warn!("🔧 MOCK VMM MODE: CVM operations will use Docker services directly");
+        }
+
         Self {
             vmm_url,
             gateway_url,
             http_client: reqwest::Client::new(),
+            mock_mode,
         }
     }
 
@@ -61,6 +77,16 @@ impl CvmManager {
             );
             // Get gateway URL for existing CVM
             let (base_domain, gateway_port) = self.get_gateway_meta().await?;
+
+            if self.mock_mode {
+                // In mock mode, use Docker service URL directly
+                let api_url = format!("http://{}:{}", base_domain, gateway_port);
+                return Ok(CvmDeploymentResult {
+                    instance_id: existing_vm_id,
+                    api_url,
+                });
+            }
+
             let instance_id = self.get_instance_id(&existing_vm_id).await.unwrap_or(None);
             let host = if let Some(id) = instance_id.as_ref() {
                 if !id.trim().is_empty() {
@@ -74,6 +100,17 @@ impl CvmManager {
             let api_url = format!("https://{}", host);
             return Ok(CvmDeploymentResult {
                 instance_id: existing_vm_id,
+                api_url,
+            });
+        }
+
+        // In mock mode, use Docker service directly instead of creating VMM CVM
+        if self.mock_mode && compose_hash.contains("term-challenge") {
+            info!("🔧 MOCK VMM: Using Docker service term-challenge-dev directly");
+            let (base_domain, gateway_port) = self.get_gateway_meta().await?;
+            let api_url = format!("http://{}:{}", base_domain, gateway_port);
+            return Ok(CvmDeploymentResult {
+                instance_id: "term-challenge-dev-docker".to_string(),
                 api_url,
             });
         }
@@ -134,7 +171,9 @@ impl CvmManager {
                                 // Skip if already present (shouldn't happen, but be safe)
                                 let env_entry = format!("{}={}", key, value);
                                 if !env.iter().any(|v| {
-                                    v.as_str().map(|s| s.starts_with(&format!("{}=", key))).unwrap_or(false)
+                                    v.as_str()
+                                        .map(|s| s.starts_with(&format!("{}=", key)))
+                                        .unwrap_or(false)
                                 }) {
                                     env.push(serde_yaml::Value::String(env_entry));
                                 }
@@ -470,6 +509,25 @@ struct VmInfo {
 impl CvmManager {
     /// Check if a CVM with the given compose_hash name exists
     async fn check_cvm_exists(&self, compose_hash: &str) -> Result<Option<String>> {
+        if self.mock_mode {
+            // In mock mode, check if Docker service exists by trying to connect to it
+            // For term-challenge, the service is already running as term-challenge-dev
+            // compose_hash might be "term-challenge-dev-001" or cvm_name might be "api-term-challenge-..."
+            if compose_hash.contains("term-challenge")
+                || compose_hash.contains("api-term-challenge")
+            {
+                // Check if we can connect to the service
+                let test_url = "http://term-challenge-dev:10000/sdk/health";
+                if let Ok(resp) = self.http_client.get(test_url).send().await {
+                    if resp.status().is_success() {
+                        info!("🔧 MOCK VMM: Found existing Docker service for term-challenge");
+                        return Ok(Some("term-challenge-dev-docker".to_string()));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+
         // List all VMs to find one with matching name
         let url = format!("{}/prpc/Status?json", self.vmm_url);
         let resp = self
@@ -497,6 +555,11 @@ impl CvmManager {
     }
 
     async fn get_gateway_meta(&self) -> Result<(String, u32)> {
+        if self.mock_mode {
+            // In mock mode, return Docker service URL
+            return Ok(("term-challenge-dev".to_string(), 10000));
+        }
+
         let url = format!("{}/prpc/GetMeta?json", self.vmm_url);
         let resp = self
             .http_client

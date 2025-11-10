@@ -254,8 +254,19 @@ impl ChallengeWsClient {
                         hkdf.expand(b"platform-api-sdk-v1", &mut key_bytes)
                             .map_err(|_| anyhow!("HKDF expansion failed"))?;
 
-                        // Verify TDX quote if present
-                        if let Some(quote_b64) = json.get("quote").and_then(|v| v.as_str()) {
+                        // Verify TDX quote if present (skip in dev mode)
+                        let dev_mode = std::env::var("DEV_MODE")
+                            .unwrap_or_else(|_| "false".to_string())
+                            .to_lowercase()
+                            == "true"
+                            || std::env::var("TEE_ENFORCED")
+                                .unwrap_or_else(|_| "true".to_string())
+                                .to_lowercase()
+                                == "false";
+
+                        if dev_mode {
+                            warn!("🔧 DEV MODE: Skipping TDX quote verification");
+                        } else if let Some(quote_b64) = json.get("quote").and_then(|v| v.as_str()) {
                             match Self::verify_tdx_quote(quote_b64, &nonce).await {
                                 Ok(_) => {
                                     info!("✅ TDX quote verified successfully");
@@ -269,27 +280,40 @@ impl ChallengeWsClient {
                             warn!("No TDX quote in attestation_response, skipping verification");
                         }
 
-                        // Send attestation_ok with HKDF salt (like validator does)
-                        let ok_msg = Message::Text(
-                            serde_json::json!({
-                                "type": "attestation_ok",
-                                "aead": "chacha20poly1305",
-                                "hkdf_salt": hkdf_salt_b64,
-                            })
-                            .to_string(),
-                        );
-                        {
-                            let mut write = write_handle.lock().await;
-                            write.send(ok_msg).await?;
+                        // Check if we're in dev mode (challenge will use plain text)
+                        let dev_mode = std::env::var("DEV_MODE")
+                            .unwrap_or_else(|_| "false".to_string())
+                            .to_lowercase()
+                            == "true"
+                            || std::env::var("TEE_ENFORCED")
+                                .unwrap_or_else(|_| "true".to_string())
+                                .to_lowercase()
+                                == "false";
+
+                        if dev_mode {
+                            // In dev mode, challenge skips attestation_ok and uses plain text
+                            // We need to detect this and use plain text messages
+                            warn!("🔧 DEV MODE: Challenge will use plain text session, skipping attestation_ok");
+                            // Use a dummy key for compatibility, but we'll send plain text messages
+                            break key_bytes;
+                        } else {
+                            // Send attestation_ok with HKDF salt (like validator does)
+                            let ok_msg = Message::Text(
+                                serde_json::json!({
+                                    "type": "attestation_ok",
+                                    "aead": "chacha20poly1305",
+                                    "hkdf_salt": hkdf_salt_b64,
+                                })
+                                .to_string(),
+                            );
+                            {
+                                let mut write = write_handle.lock().await;
+                                write.send(ok_msg).await?;
+                            }
+
+                            info!("✅ TDX attestation verified, connection encrypted");
+                            break key_bytes;
                         }
-
-                        // Move to verified state
-                        conn_state = ConnectionState::Verified {
-                            aead_key: key_bytes,
-                        };
-
-                        info!("✅ TDX attestation verified, connection encrypted");
-                        break key_bytes;
                     }
                 }
 
@@ -299,44 +323,71 @@ impl ChallengeWsClient {
             }
         };
 
-        // After TDX verification, request migrations via encrypted WebSocket
+        // Check if we're in dev mode (use plain text messages)
+        let dev_mode = std::env::var("DEV_MODE")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true"
+            || std::env::var("TEE_ENFORCED")
+                .unwrap_or_else(|_| "true".to_string())
+                .to_lowercase()
+                == "false";
+
+        // After TDX verification, request migrations via WebSocket (encrypted or plain text based on mode)
         // Only request migrations if CHALLENGE_ADMIN=true (admin mode)
         // Note: schema_name might be temporary (v1) until db_version is known
         if let Some(_migration_runner) = &self.migration_runner {
             // In admin mode (CHALLENGE_ADMIN=true), we request migrations
             // In non-admin mode, the challenge will return empty migrations
-            info!("Requesting migrations via encrypted WebSocket (only if CHALLENGE_ADMIN=true)");
+            if dev_mode {
+                info!("🔧 DEV MODE: Requesting migrations via plain text WebSocket");
+            } else {
+                info!(
+                    "Requesting migrations via encrypted WebSocket (only if CHALLENGE_ADMIN=true)"
+                );
+            }
 
             // Send migrations_request message
-            info!("Sending migrations_request via encrypted WebSocket");
-            let mut request_nonce = [0u8; 12];
-            rand::thread_rng().fill_bytes(&mut request_nonce);
-            let request_nonce_b64 = base64_engine.encode(request_nonce);
-
             let request_msg = serde_json::json!({
                 "type": "migrations_request"
             });
-            let request_bytes = serde_json::to_vec(&request_msg)
-                .map_err(|_| anyhow!("Failed to serialize migrations request"))?;
 
-            let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
-                .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
-            let request_ciphertext = cipher
-                .encrypt(&request_nonce.into(), request_bytes.as_slice())
-                .map_err(|_| anyhow!("Failed to encrypt migrations request"))?;
-            let request_ciphertext_b64 = base64_engine.encode(request_ciphertext);
+            if dev_mode {
+                // In dev mode, send plain text message
+                {
+                    let mut write = write_handle.lock().await;
+                    let msg_str = serde_json::to_string(&request_msg)?;
+                    write.send(Message::Text(msg_str)).await?;
+                    info!("🔧 DEV MODE: migrations_request sent (plain text), waiting for response...");
+                }
+            } else {
+                // In production mode, encrypt the message
+                let mut request_nonce = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut request_nonce);
+                let request_nonce_b64 = base64_engine.encode(request_nonce);
 
-            let request_envelope = serde_json::json!({
-                "enc": "chacha20poly1305",
-                "nonce": request_nonce_b64,
-                "ciphertext": request_ciphertext_b64,
-            });
+                let request_bytes = serde_json::to_vec(&request_msg)
+                    .map_err(|_| anyhow!("Failed to serialize migrations request"))?;
 
-            {
-                let mut write = write_handle.lock().await;
-                let envelope_str = serde_json::to_string(&request_envelope)?;
-                write.send(Message::Text(envelope_str.clone())).await?;
-                info!("migrations_request sent, waiting for response...");
+                let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
+                    .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
+                let request_ciphertext = cipher
+                    .encrypt(&request_nonce.into(), request_bytes.as_slice())
+                    .map_err(|_| anyhow!("Failed to encrypt migrations request"))?;
+                let request_ciphertext_b64 = base64_engine.encode(request_ciphertext);
+
+                let request_envelope = serde_json::json!({
+                    "enc": "chacha20poly1305",
+                    "nonce": request_nonce_b64,
+                    "ciphertext": request_ciphertext_b64,
+                });
+
+                {
+                    let mut write = write_handle.lock().await;
+                    let envelope_str = serde_json::to_string(&request_envelope)?;
+                    write.send(Message::Text(envelope_str.clone())).await?;
+                    info!("migrations_request sent, waiting for response...");
+                }
             }
 
             // Wait for migrations_response
@@ -353,59 +404,76 @@ impl ChallengeWsClient {
                         match msg_result {
                             Ok(msg) => {
                                 if let Message::Text(text) = msg {
-                                    info!(
-                                        "Received message in migrations wait loop, decrypting..."
-                                    );
-                                    let json: Value = serde_json::from_str(&text)?;
-                                    let envelope: EncryptedEnvelope = serde_json::from_value(json)?;
-                                    let nonce_bytes = match base64_engine.decode(&envelope.nonce) {
-                                        Ok(bytes) => bytes,
-                                        Err(e) => {
-                                            warn!(error = %e, "Failed to decode nonce");
+                                    let plain_msg: PlainMessage = if dev_mode {
+                                        // In dev mode, message is already plain text
+                                        info!("🔧 DEV MODE: Received plain text message in migrations wait loop");
+                                        match serde_json::from_str(&text) {
+                                            Ok(pm) => pm,
+                                            Err(e) => {
+                                                warn!(error = %e, "Failed to parse plain text message");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        // In production mode, decrypt the message
+                                        info!("Received message in migrations wait loop, decrypting...");
+                                        let json: Value = serde_json::from_str(&text)?;
+                                        let envelope: EncryptedEnvelope =
+                                            serde_json::from_value(json)?;
+                                        let nonce_bytes =
+                                            match base64_engine.decode(&envelope.nonce) {
+                                                Ok(bytes) => bytes,
+                                                Err(e) => {
+                                                    warn!(error = %e, "Failed to decode nonce");
+                                                    continue;
+                                                }
+                                            };
+                                        if nonce_bytes.len() != 12 {
+                                            warn!(
+                                                "Invalid nonce length: {} (expected 12)",
+                                                nonce_bytes.len()
+                                            );
                                             continue;
                                         }
-                                    };
-                                    if nonce_bytes.len() != 12 {
-                                        warn!(
-                                            "Invalid nonce length: {} (expected 12)",
-                                            nonce_bytes.len()
-                                        );
-                                        continue;
-                                    }
-                                    let nonce_array: [u8; 12] = match nonce_bytes[..12].try_into() {
-                                        Ok(arr) => arr,
-                                        Err(_) => {
-                                            warn!("Failed to convert nonce to array (this should not happen)");
-                                            continue;
-                                        }
-                                    };
+                                        let nonce_array: [u8; 12] = match nonce_bytes[..12]
+                                            .try_into()
+                                        {
+                                            Ok(arr) => arr,
+                                            Err(_) => {
+                                                warn!("Failed to convert nonce to array (this should not happen)");
+                                                continue;
+                                            }
+                                        };
 
-                                    let ciphertext =
-                                        match base64_engine.decode(&envelope.ciphertext) {
+                                        let ciphertext = match base64_engine
+                                            .decode(&envelope.ciphertext)
+                                        {
                                             Ok(bytes) => bytes,
                                             Err(e) => {
                                                 warn!(error = %e, "Failed to decode ciphertext");
                                                 continue;
                                             }
                                         };
-                                    let plaintext = match cipher
-                                        .decrypt(&nonce_array.into(), ciphertext.as_slice())
-                                    {
-                                        Ok(pt) => pt,
-                                        Err(e) => {
-                                            warn!(error = %e, "Decryption failed for message");
-                                            continue;
-                                        }
-                                    };
+                                        let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
+                                            .map_err(|_| anyhow!("Invalid AEAD key length"))?;
+                                        let plaintext = match cipher
+                                            .decrypt(&nonce_array.into(), ciphertext.as_slice())
+                                        {
+                                            Ok(pt) => pt,
+                                            Err(e) => {
+                                                warn!(error = %e, "Decryption failed for message");
+                                                continue;
+                                            }
+                                        };
 
-                                    let plain_msg: PlainMessage =
                                         match serde_json::from_slice(&plaintext) {
                                             Ok(pm) => pm,
                                             Err(e) => {
                                                 warn!(error = %e, "Failed to parse plain message");
                                                 continue;
                                             }
-                                        };
+                                        }
+                                    };
 
                                     info!(msg_type = %plain_msg.msg_type, "Decrypted message type");
 
@@ -541,12 +609,6 @@ impl ChallengeWsClient {
         // Send orm_ready signal to challenge after migrations are applied (or timeout)
         // This tells the challenge that it can now initialize ORM client and run tests
         {
-            let cipher_for_ready = ChaCha20Poly1305::new_from_slice(&aead_key)
-                .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
-            let mut orm_ready_nonce = [0u8; 12];
-            rand::thread_rng().fill_bytes(&mut orm_ready_nonce);
-            let orm_ready_nonce_b64 = base64_engine.encode(orm_ready_nonce);
-
             // Include schema_name in orm_ready message so challenge knows which schema to use
             let schema_name_for_challenge = if let Some(schema_arc) = &self.schema_name {
                 schema_arc.read().await.clone()
@@ -565,27 +627,45 @@ impl ChallengeWsClient {
                 "type": "orm_ready",
                 "schema": schema_name_for_challenge
             });
-            let orm_ready_bytes = serde_json::to_vec(&orm_ready_msg)
-                .map_err(|_| anyhow!("Failed to serialize orm_ready"))?;
 
-            let orm_ready_ciphertext = cipher_for_ready
-                .encrypt(&orm_ready_nonce.into(), orm_ready_bytes.as_slice())
-                .map_err(|_| anyhow!("Failed to encrypt orm_ready"))?;
-            let orm_ready_ciphertext_b64 = base64_engine.encode(orm_ready_ciphertext);
+            if dev_mode {
+                // In dev mode, send plain text message
+                {
+                    let mut write = write_handle.lock().await;
+                    let msg_str = serde_json::to_string(&orm_ready_msg)?;
+                    write.send(Message::Text(msg_str)).await?;
+                    info!("🔧 DEV MODE: ✅ Sent orm_ready signal to challenge (plain text)");
+                }
+            } else {
+                // In production mode, encrypt the message
+                let cipher_for_ready = ChaCha20Poly1305::new_from_slice(&aead_key)
+                    .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
+                let mut orm_ready_nonce = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut orm_ready_nonce);
+                let orm_ready_nonce_b64 = base64_engine.encode(orm_ready_nonce);
 
-            let orm_ready_envelope = serde_json::json!({
-                "enc": "chacha20poly1305",
-                "nonce": orm_ready_nonce_b64,
-                "ciphertext": orm_ready_ciphertext_b64,
-            });
+                let orm_ready_bytes = serde_json::to_vec(&orm_ready_msg)
+                    .map_err(|_| anyhow!("Failed to serialize orm_ready"))?;
 
-            {
-                let mut write = write_handle.lock().await;
-                write
-                    .send(Message::Text(serde_json::to_string(&orm_ready_envelope)?))
-                    .await?;
+                let orm_ready_ciphertext = cipher_for_ready
+                    .encrypt(&orm_ready_nonce.into(), orm_ready_bytes.as_slice())
+                    .map_err(|_| anyhow!("Failed to encrypt orm_ready"))?;
+                let orm_ready_ciphertext_b64 = base64_engine.encode(orm_ready_ciphertext);
+
+                let orm_ready_envelope = serde_json::json!({
+                    "enc": "chacha20poly1305",
+                    "nonce": orm_ready_nonce_b64,
+                    "ciphertext": orm_ready_ciphertext_b64,
+                });
+
+                {
+                    let mut write = write_handle.lock().await;
+                    write
+                        .send(Message::Text(serde_json::to_string(&orm_ready_envelope)?))
+                        .await?;
+                }
+                info!("✅ Sent orm_ready signal to challenge");
             }
-            info!("✅ Sent orm_ready signal to challenge");
         }
 
         // Clone references for ORM handling
@@ -597,70 +677,83 @@ impl ChallengeWsClient {
         while let Some(msg) = read.next().await {
             let msg = msg?;
             if let Message::Text(text) = msg {
-                info!("📥 Received raw WebSocket message (encrypted envelope)");
+                let plain_msg: PlainMessage = if dev_mode {
+                    // In dev mode, message is already plain text
+                    match serde_json::from_str(&text) {
+                        Ok(pm) => pm,
+                        Err(e) => {
+                            warn!(error = %e, "🔧 DEV MODE: Failed to parse plain text message");
+                            continue;
+                        }
+                    }
+                } else {
+                    // In production mode, decrypt the message
+                    info!("📥 Received raw WebSocket message (encrypted envelope)");
 
-                let json: Value = match serde_json::from_str(&text) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to parse WebSocket message as JSON");
+                    let json: Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to parse WebSocket message as JSON");
+                            continue;
+                        }
+                    };
+
+                    // Decrypt and handle message
+                    let envelope: EncryptedEnvelope = match serde_json::from_value(json) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to parse message as encrypted envelope");
+                            continue;
+                        }
+                    };
+
+                    let nonce_bytes = match base64_engine.decode(&envelope.nonce) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to decode nonce from base64");
+                            continue;
+                        }
+                    };
+
+                    if nonce_bytes.len() != 12 {
+                        warn!(len = nonce_bytes.len(), "Invalid nonce length");
                         continue;
                     }
-                };
+                    let nonce_array: [u8; 12] = match nonce_bytes[..12].try_into() {
+                        Ok(arr) => arr,
+                        Err(_) => {
+                            warn!("Failed to convert nonce to array (this should not happen)");
+                            continue;
+                        }
+                    };
 
-                // Decrypt and handle message
-                let envelope: EncryptedEnvelope = match serde_json::from_value(json) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to parse message as encrypted envelope");
-                        continue;
-                    }
-                };
+                    let ciphertext = match base64_engine.decode(&envelope.ciphertext) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to decode ciphertext from base64");
+                            continue;
+                        }
+                    };
 
-                let nonce_bytes = match base64_engine.decode(&envelope.nonce) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to decode nonce from base64");
-                        continue;
-                    }
-                };
+                    let cipher = ChaCha20Poly1305::new_from_slice(&aead_key).map_err(|_| {
+                        error!("Invalid AEAD key length (expected 32 bytes)");
+                        anyhow!("Invalid AEAD key length")
+                    })?;
+                    let plaintext = match cipher.decrypt(&nonce_array.into(), ciphertext.as_slice())
+                    {
+                        Ok(pt) => pt,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to decrypt message - may be from wrong session or corrupted");
+                            continue;
+                        }
+                    };
 
-                if nonce_bytes.len() != 12 {
-                    warn!(len = nonce_bytes.len(), "Invalid nonce length");
-                    continue;
-                }
-                let nonce_array: [u8; 12] = match nonce_bytes[..12].try_into() {
-                    Ok(arr) => arr,
-                    Err(_) => {
-                        warn!("Failed to convert nonce to array (this should not happen)");
-                        continue;
-                    }
-                };
-
-                let ciphertext = match base64_engine.decode(&envelope.ciphertext) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to decode ciphertext from base64");
-                        continue;
-                    }
-                };
-
-                let cipher = ChaCha20Poly1305::new_from_slice(&aead_key).map_err(|_| {
-                    error!("Invalid AEAD key length (expected 32 bytes)");
-                    anyhow!("Invalid AEAD key length")
-                })?;
-                let plaintext = match cipher.decrypt(&nonce_array.into(), ciphertext.as_slice()) {
-                    Ok(pt) => pt,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to decrypt message - may be from wrong session or corrupted");
-                        continue;
-                    }
-                };
-
-                let plain_msg: PlainMessage = match serde_json::from_slice(&plaintext) {
-                    Ok(pm) => pm,
-                    Err(e) => {
-                        warn!(error = %e, "Failed to parse decrypted plaintext as PlainMessage");
-                        continue;
+                    match serde_json::from_slice(&plaintext) {
+                        Ok(pm) => pm,
+                        Err(e) => {
+                            warn!(error = %e, "Failed to parse decrypted plaintext as PlainMessage");
+                            continue;
+                        }
                     }
                 };
 
@@ -670,6 +763,16 @@ impl ChallengeWsClient {
                     challenge_id = challenge_id_clone.as_deref(),
                     "Received message from challenge via WebSocket"
                 );
+
+                // Create cipher for encryption (only needed in production mode)
+                let cipher_opt = if dev_mode {
+                    None
+                } else {
+                    Some(ChaCha20Poly1305::new_from_slice(&aead_key).map_err(|_| {
+                        error!("Invalid AEAD key length (expected 32 bytes)");
+                        anyhow!("Invalid AEAD key length")
+                    })?)
+                };
 
                 // Handle benchmark_progress messages for Redis logging
                 if plain_msg.msg_type == "benchmark_progress" {
@@ -791,43 +894,64 @@ impl ChallengeWsClient {
                                                 );
 
                                                 // Send acknowledgment
-                                                let mut ack_nonce = [0u8; 12];
-                                                rand::thread_rng().fill_bytes(&mut ack_nonce);
-                                                let ack_nonce_b64 = base64_engine.encode(ack_nonce);
-
                                                 let ack_msg = serde_json::json!({
                                                     "type": "orm_permissions_ack",
                                                     "status": "success"
                                                 });
-                                                let ack_bytes = serde_json::to_vec(&ack_msg)
-                                                    .map_err(|_| {
-                                                        anyhow!("Failed to serialize ack")
-                                                    })?;
 
-                                                let ack_ciphertext = cipher
-                                                    .encrypt(
-                                                        &ack_nonce.into(),
-                                                        ack_bytes.as_slice(),
-                                                    )
-                                                    .map_err(|_| {
-                                                        anyhow!("Failed to encrypt ack")
-                                                    })?;
-                                                let ack_ciphertext_b64 =
-                                                    base64_engine.encode(ack_ciphertext);
+                                                if dev_mode {
+                                                    // In dev mode, send plain text acknowledgment
+                                                    {
+                                                        let mut write = write_handle.lock().await;
+                                                        let msg_str =
+                                                            serde_json::to_string(&ack_msg)?;
+                                                        write.send(Message::Text(msg_str)).await?;
+                                                    }
+                                                } else {
+                                                    // In production mode, encrypt the acknowledgment
+                                                    if let Some(cipher) = &cipher_opt {
+                                                        let mut ack_nonce = [0u8; 12];
+                                                        rand::thread_rng()
+                                                            .fill_bytes(&mut ack_nonce);
+                                                        let ack_nonce_b64 =
+                                                            base64_engine.encode(ack_nonce);
 
-                                                let ack_envelope = serde_json::json!({
-                                                    "enc": "chacha20poly1305",
-                                                    "nonce": ack_nonce_b64,
-                                                    "ciphertext": ack_ciphertext_b64,
-                                                });
+                                                        let ack_bytes = serde_json::to_vec(
+                                                            &ack_msg,
+                                                        )
+                                                        .map_err(|_| {
+                                                            anyhow!("Failed to serialize ack")
+                                                        })?;
 
-                                                {
-                                                    let mut write = write_handle.lock().await;
-                                                    write
-                                                        .send(Message::Text(serde_json::to_string(
-                                                            &ack_envelope,
-                                                        )?))
-                                                        .await?;
+                                                        let ack_ciphertext = cipher
+                                                            .encrypt(
+                                                                &ack_nonce.into(),
+                                                                ack_bytes.as_slice(),
+                                                            )
+                                                            .map_err(|_| {
+                                                                anyhow!("Failed to encrypt ack")
+                                                            })?;
+                                                        let ack_ciphertext_b64 =
+                                                            base64_engine.encode(ack_ciphertext);
+
+                                                        let ack_envelope = serde_json::json!({
+                                                            "enc": "chacha20poly1305",
+                                                            "nonce": ack_nonce_b64,
+                                                            "ciphertext": ack_ciphertext_b64,
+                                                        });
+
+                                                        {
+                                                            let mut write =
+                                                                write_handle.lock().await;
+                                                            write
+                                                                .send(Message::Text(
+                                                                    serde_json::to_string(
+                                                                        &ack_envelope,
+                                                                    )?,
+                                                                ))
+                                                                .await?;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -885,35 +1009,50 @@ impl ChallengeWsClient {
                             );
 
                             // Send response
-                            let mut response_nonce = [0u8; 12];
-                            rand::thread_rng().fill_bytes(&mut response_nonce);
-                            let response_nonce_b64 = base64_engine.encode(response_nonce);
-
                             let response_msg = serde_json::json!({
                                 "type": "validator_count_result",
                                 "compose_hash": compose_hash,
                                 "count": count
                             });
 
-                            let response_bytes = serde_json::to_vec(&response_msg)
-                                .map_err(|_| anyhow!("Failed to serialize response"))?;
+                            if dev_mode {
+                                // In dev mode, send plain text response
+                                {
+                                    let mut write = write_handle.lock().await;
+                                    let msg_str = serde_json::to_string(&response_msg)?;
+                                    write.send(Message::Text(msg_str)).await?;
+                                }
+                            } else {
+                                // In production mode, encrypt the response
+                                if let Some(cipher) = &cipher_opt {
+                                    let mut response_nonce = [0u8; 12];
+                                    rand::thread_rng().fill_bytes(&mut response_nonce);
+                                    let response_nonce_b64 = base64_engine.encode(response_nonce);
 
-                            let response_ciphertext = cipher
-                                .encrypt(&response_nonce.into(), response_bytes.as_slice())
-                                .map_err(|_| anyhow!("Failed to encrypt response"))?;
-                            let response_ciphertext_b64 = base64_engine.encode(response_ciphertext);
+                                    let response_bytes = serde_json::to_vec(&response_msg)
+                                        .map_err(|_| anyhow!("Failed to serialize response"))?;
 
-                            let response_envelope = serde_json::json!({
-                                "enc": "chacha20poly1305",
-                                "nonce": response_nonce_b64,
-                                "ciphertext": response_ciphertext_b64,
-                            });
+                                    let response_ciphertext = cipher
+                                        .encrypt(&response_nonce.into(), response_bytes.as_slice())
+                                        .map_err(|_| anyhow!("Failed to encrypt response"))?;
+                                    let response_ciphertext_b64 =
+                                        base64_engine.encode(response_ciphertext);
 
-                            {
-                                let mut write = write_handle.lock().await;
-                                write
-                                    .send(Message::Text(serde_json::to_string(&response_envelope)?))
-                                    .await?;
+                                    let response_envelope = serde_json::json!({
+                                        "enc": "chacha20poly1305",
+                                        "nonce": response_nonce_b64,
+                                        "ciphertext": response_ciphertext_b64,
+                                    });
+
+                                    {
+                                        let mut write = write_handle.lock().await;
+                                        write
+                                            .send(Message::Text(serde_json::to_string(
+                                                &response_envelope,
+                                            )?))
+                                            .await?;
+                                    }
+                                }
                             }
                             continue;
                         } else {
@@ -970,12 +1109,6 @@ impl ChallengeWsClient {
                                         let orm_gateway_guard = orm_gateway.read().await;
                                         match orm_gateway_guard.execute_query(orm_query).await {
                                             Ok(result) => {
-                                                // Encrypt and send result back
-                                                let mut response_nonce = [0u8; 12];
-                                                rand::thread_rng().fill_bytes(&mut response_nonce);
-                                                let response_nonce_b64 =
-                                                    base64_engine.encode(response_nonce);
-
                                                 // Include query_id if present in request
                                                 let mut response_msg = serde_json::json!({
                                                     "type": "orm_result",
@@ -1015,35 +1148,62 @@ impl ChallengeWsClient {
                                                 } else {
                                                     warn!("ORM query missing query_id/message_id, response won't be matched");
                                                 }
-                                                let response_bytes =
-                                                    serde_json::to_vec(&response_msg).map_err(
-                                                        |_| anyhow!("Failed to serialize response"),
-                                                    )?;
 
-                                                let response_ciphertext = cipher
-                                                    .encrypt(
-                                                        &response_nonce.into(),
-                                                        response_bytes.as_slice(),
-                                                    )
-                                                    .map_err(|_| {
-                                                        anyhow!("Failed to encrypt response")
-                                                    })?;
-                                                let response_ciphertext_b64 =
-                                                    base64_engine.encode(response_ciphertext);
+                                                if dev_mode {
+                                                    // In dev mode, send plain text response
+                                                    {
+                                                        let mut write = write_handle.lock().await;
+                                                        let msg_str =
+                                                            serde_json::to_string(&response_msg)?;
+                                                        write.send(Message::Text(msg_str)).await?;
+                                                    }
+                                                } else {
+                                                    // In production mode, encrypt the response
+                                                    if let Some(cipher) = &cipher_opt {
+                                                        let mut response_nonce = [0u8; 12];
+                                                        rand::thread_rng()
+                                                            .fill_bytes(&mut response_nonce);
+                                                        let response_nonce_b64 =
+                                                            base64_engine.encode(response_nonce);
 
-                                                let response_envelope = serde_json::json!({
-                                                    "enc": "chacha20poly1305",
-                                                    "nonce": response_nonce_b64,
-                                                    "ciphertext": response_ciphertext_b64,
-                                                });
+                                                        let response_bytes = serde_json::to_vec(
+                                                            &response_msg,
+                                                        )
+                                                        .map_err(|_| {
+                                                            anyhow!("Failed to serialize response")
+                                                        })?;
 
-                                                {
-                                                    let mut write = write_handle.lock().await;
-                                                    write
-                                                        .send(Message::Text(serde_json::to_string(
-                                                            &response_envelope,
-                                                        )?))
-                                                        .await?;
+                                                        let response_ciphertext = cipher
+                                                            .encrypt(
+                                                                &response_nonce.into(),
+                                                                response_bytes.as_slice(),
+                                                            )
+                                                            .map_err(|_| {
+                                                                anyhow!(
+                                                                    "Failed to encrypt response"
+                                                                )
+                                                            })?;
+                                                        let response_ciphertext_b64 = base64_engine
+                                                            .encode(response_ciphertext);
+
+                                                        let response_envelope = serde_json::json!({
+                                                            "enc": "chacha20poly1305",
+                                                            "nonce": response_nonce_b64,
+                                                            "ciphertext": response_ciphertext_b64,
+                                                        });
+
+                                                        {
+                                                            let mut write =
+                                                                write_handle.lock().await;
+                                                            write
+                                                                .send(Message::Text(
+                                                                    serde_json::to_string(
+                                                                        &response_envelope,
+                                                                    )?,
+                                                                ))
+                                                                .await?;
+                                                        }
+                                                    }
                                                 }
                                                 info!(
                                                     challenge_id = challenge_id,
@@ -1054,11 +1214,6 @@ impl ChallengeWsClient {
                                             }
                                             Err(e) => {
                                                 // Send error response
-                                                let mut error_nonce = [0u8; 12];
-                                                rand::thread_rng().fill_bytes(&mut error_nonce);
-                                                let error_nonce_b64 =
-                                                    base64_engine.encode(error_nonce);
-
                                                 // Include query_id/message_id if present in request (same logic as success response)
                                                 let mut error_msg = serde_json::json!({
                                                     "type": "error",
@@ -1091,35 +1246,61 @@ impl ChallengeWsClient {
                                                 } else {
                                                     warn!(error = %e, "ORM error missing query_id/message_id, response won't be matched");
                                                 }
-                                                let error_bytes = serde_json::to_vec(&error_msg)
-                                                    .map_err(|_| {
-                                                        anyhow!("Failed to serialize error")
-                                                    })?;
 
-                                                let error_ciphertext = cipher
-                                                    .encrypt(
-                                                        &error_nonce.into(),
-                                                        error_bytes.as_slice(),
-                                                    )
-                                                    .map_err(|_| {
-                                                        anyhow!("Failed to encrypt error")
-                                                    })?;
-                                                let error_ciphertext_b64 =
-                                                    base64_engine.encode(error_ciphertext);
+                                                if dev_mode {
+                                                    // In dev mode, send plain text error response
+                                                    {
+                                                        let mut write = write_handle.lock().await;
+                                                        let msg_str =
+                                                            serde_json::to_string(&error_msg)?;
+                                                        write.send(Message::Text(msg_str)).await?;
+                                                    }
+                                                } else {
+                                                    // In production mode, encrypt the error response
+                                                    if let Some(cipher) = &cipher_opt {
+                                                        let mut error_nonce = [0u8; 12];
+                                                        rand::thread_rng()
+                                                            .fill_bytes(&mut error_nonce);
+                                                        let error_nonce_b64 =
+                                                            base64_engine.encode(error_nonce);
 
-                                                let error_envelope = serde_json::json!({
-                                                    "enc": "chacha20poly1305",
-                                                    "nonce": error_nonce_b64,
-                                                    "ciphertext": error_ciphertext_b64,
-                                                });
+                                                        let error_bytes =
+                                                            serde_json::to_vec(&error_msg)
+                                                                .map_err(|_| {
+                                                                    anyhow!(
+                                                                        "Failed to serialize error"
+                                                                    )
+                                                                })?;
 
-                                                {
-                                                    let mut write = write_handle.lock().await;
-                                                    write
-                                                        .send(Message::Text(serde_json::to_string(
-                                                            &error_envelope,
-                                                        )?))
-                                                        .await?;
+                                                        let error_ciphertext = cipher
+                                                            .encrypt(
+                                                                &error_nonce.into(),
+                                                                error_bytes.as_slice(),
+                                                            )
+                                                            .map_err(|_| {
+                                                                anyhow!("Failed to encrypt error")
+                                                            })?;
+                                                        let error_ciphertext_b64 =
+                                                            base64_engine.encode(error_ciphertext);
+
+                                                        let error_envelope = serde_json::json!({
+                                                            "enc": "chacha20poly1305",
+                                                            "nonce": error_nonce_b64,
+                                                            "ciphertext": error_ciphertext_b64,
+                                                        });
+
+                                                        {
+                                                            let mut write =
+                                                                write_handle.lock().await;
+                                                            write
+                                                                .send(Message::Text(
+                                                                    serde_json::to_string(
+                                                                        &error_envelope,
+                                                                    )?,
+                                                                ))
+                                                                .await?;
+                                                        }
+                                                    }
                                                 }
                                                 warn!(
                                                     challenge_id = challenge_id,

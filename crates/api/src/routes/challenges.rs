@@ -31,7 +31,10 @@ pub fn create_router() -> Router<AppState> {
         )
         .route("/challenges/:id/emissions", get(get_challenge_emissions))
         .route("/challenges/:id/jobs", get(get_challenge_jobs))
-        .route("/challenges/:compose_hash/env-vars", post(store_challenge_env_vars))
+        .route(
+            "/challenges/:compose_hash/env-vars",
+            post(store_challenge_env_vars),
+        )
 }
 
 /// List challenges with pagination
@@ -596,7 +599,10 @@ pub async fn store_challenge_env_vars(
 
     // Store each environment variable
     for (key, value) in request.env_vars.iter() {
-        if let Err(e) = state.store_challenge_env_var(&compose_hash, key, value).await {
+        if let Err(e) = state
+            .store_challenge_env_var(&compose_hash, key, value)
+            .await
+        {
             tracing::error!(
                 compose_hash = %compose_hash,
                 key = %key,

@@ -316,12 +316,15 @@ pub async fn get_job_progress(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis for enhanced progress data
-        let mut conn = redis.client.get_tokio_connection_manager().await
+        let mut conn = redis
+            .client
+            .get_tokio_connection_manager()
+            .await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         let key = format!("job:{}:progress", job_id);
         let json_str: Option<String> = redis::cmd("GET")
             .arg(&key)
@@ -331,11 +334,11 @@ pub async fn get_job_progress(
                 tracing::error!("Failed to get job progress from Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         if let Some(json) = json_str {
             // Parse as generic JSON to preserve all fields
-            let progress: JsonValue = serde_json::from_str(&json)
-                .unwrap_or_else(|_| JsonValue::Null);
+            let progress: JsonValue =
+                serde_json::from_str(&json).unwrap_or_else(|_| JsonValue::Null);
             Ok(Json(progress))
         } else {
             Err(StatusCode::NOT_FOUND)
@@ -530,12 +533,15 @@ pub async fn get_current_test(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis
-        let mut conn = redis.client.get_tokio_connection_manager().await
+        let mut conn = redis
+            .client
+            .get_tokio_connection_manager()
+            .await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         let key = format!("job:{}:progress", job_id);
         let json_str: Option<String> = redis::cmd("GET")
             .arg(&key)
@@ -545,12 +551,12 @@ pub async fn get_current_test(
                 tracing::error!("Failed to get job progress from Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         if let Some(json) = json_str {
             // Parse as generic JSON
-            let progress: JsonValue = serde_json::from_str(&json)
-                .unwrap_or_else(|_| JsonValue::Null);
-            
+            let progress: JsonValue =
+                serde_json::from_str(&json).unwrap_or_else(|_| JsonValue::Null);
+
             // Extract current_test from the progress data
             if let Some(current_test) = progress.get("current_test") {
                 Ok(Json(current_test.clone()))
@@ -580,26 +586,31 @@ pub async fn stream_logs(
 
     if let Some(redis) = &state.redis_client {
         let mut logs = Vec::new();
-        
+
         // Get connection
-        let mut conn = redis.client.get_tokio_connection_manager().await
+        let mut conn = redis
+            .client
+            .get_tokio_connection_manager()
+            .await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         // Try to read from Redis Streams first
         let stream_key = format!("job:logs:{}", job_id);
-        let stream_result: Result<Vec<(String, std::collections::HashMap<String, String>)>, redis::RedisError> = 
-            redis::cmd("XRANGE")
-                .arg(&stream_key)
-                .arg("-")
-                .arg("+")
-                .arg("COUNT")
-                .arg(params.limit.unwrap_or(1000))
-                .query_async(&mut conn)
-                .await;
-        
+        let stream_result: Result<
+            Vec<(String, std::collections::HashMap<String, String>)>,
+            redis::RedisError,
+        > = redis::cmd("XRANGE")
+            .arg(&stream_key)
+            .arg("-")
+            .arg("+")
+            .arg("COUNT")
+            .arg(params.limit.unwrap_or(1000))
+            .query_async(&mut conn)
+            .await;
+
         match stream_result {
             Ok(stream_entries) => {
                 // Convert stream entries to log format
@@ -615,8 +626,11 @@ pub async fn stream_logs(
                 }
             }
             Err(e) => {
-                tracing::debug!("Failed to read from Redis Streams, falling back to progress data: {}", e);
-                
+                tracing::debug!(
+                    "Failed to read from Redis Streams, falling back to progress data: {}",
+                    e
+                );
+
                 // Fallback to reading from progress data
                 let key = format!("job:{}:progress", job_id);
                 let json_str: Option<String> = redis::cmd("GET")
@@ -627,19 +641,20 @@ pub async fn stream_logs(
                         tracing::error!("Failed to get job progress from Redis: {}", e);
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
-                
+
                 if let Some(json) = json_str {
-                    let progress: JsonValue = serde_json::from_str(&json)
-                        .unwrap_or_else(|_| JsonValue::Null);
-                    
+                    let progress: JsonValue =
+                        serde_json::from_str(&json).unwrap_or_else(|_| JsonValue::Null);
+
                     // Get live_logs if available
                     if let Some(live_logs) = progress.get("live_logs").and_then(|v| v.as_array()) {
                         logs.extend(live_logs.iter().cloned());
                     }
-                    
+
                     // Get current test logs if available
                     if let Some(current_test) = progress.get("current_test") {
-                        if let Some(test_logs) = current_test.get("logs").and_then(|v| v.as_array()) {
+                        if let Some(test_logs) = current_test.get("logs").and_then(|v| v.as_array())
+                        {
                             logs.extend(test_logs.iter().cloned());
                         }
                     }
@@ -648,7 +663,7 @@ pub async fn stream_logs(
                 }
             }
         }
-        
+
         // Apply filters
         let filtered_logs: Vec<JsonValue> = logs
             .into_iter()
@@ -665,7 +680,7 @@ pub async fn stream_logs(
             .skip(params.offset.unwrap_or(0))
             .take(params.limit.unwrap_or(1000))
             .collect();
-        
+
         Ok(Json(serde_json::json!({
             "job_id": job_id,
             "logs": filtered_logs,
@@ -686,12 +701,15 @@ pub async fn get_resource_usage(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis
-        let mut conn = redis.client.get_tokio_connection_manager().await
+        let mut conn = redis
+            .client
+            .get_tokio_connection_manager()
+            .await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         let key = format!("job:{}:progress", job_id);
         let json_str: Option<String> = redis::cmd("GET")
             .arg(&key)
@@ -701,33 +719,36 @@ pub async fn get_resource_usage(
                 tracing::error!("Failed to get job progress from Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        
+
         if let Some(json) = json_str {
-            let progress: JsonValue = serde_json::from_str(&json)
-                .unwrap_or_else(|_| JsonValue::Null);
-            
+            let progress: JsonValue =
+                serde_json::from_str(&json).unwrap_or_else(|_| JsonValue::Null);
+
             let mut resource_data = serde_json::json!({
                 "job_id": job_id,
                 "current_test_resources": null,
                 "test_history": []
             });
-            
+
             // Get current test resource usage
             if let Some(current_test) = progress.get("current_test") {
                 if let Some(resource_usage) = current_test.get("resource_usage") {
                     resource_data["current_test_resources"] = resource_usage.clone();
                 }
             }
-            
+
             // Get historical resource usage from test results
-            if let Some(results) = progress.get("results").and_then(|r| r.get("results")).and_then(|r| r.as_array()) {
+            if let Some(results) = progress
+                .get("results")
+                .and_then(|r| r.get("results"))
+                .and_then(|r| r.as_array())
+            {
                 let history: Vec<JsonValue> = results
                     .iter()
                     .filter_map(|result| {
-                        if let (Some(task_id), Some(metrics)) = (
-                            result.get("task_id"),
-                            result.get("metrics")
-                        ) {
+                        if let (Some(task_id), Some(metrics)) =
+                            (result.get("task_id"), result.get("metrics"))
+                        {
                             Some(serde_json::json!({
                                 "task_id": task_id,
                                 "metrics": metrics
@@ -737,10 +758,10 @@ pub async fn get_resource_usage(
                         }
                     })
                     .collect();
-                
+
                 resource_data["test_history"] = serde_json::Value::Array(history);
             }
-            
+
             Ok(Json(resource_data))
         } else {
             Err(StatusCode::NOT_FOUND)

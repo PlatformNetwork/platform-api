@@ -173,8 +173,7 @@ fn load_config(_path: &str) -> Result<AppConfig> {
             .unwrap_or_else(|_| "3000".to_string())
             .parse()
             .expect("Invalid SERVER_PORT"),
-        server_host: env::var("SERVER_HOST")
-            .unwrap_or_else(|_| "0.0.0.0".to_string()),
+        server_host: env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
         jwt_secret_ui: env::var("JWT_SECRET_UI").unwrap_or_else(|_| "disabled-no-jwt".to_string()),
         database_url: env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgresql://localhost/platform".to_string()),
