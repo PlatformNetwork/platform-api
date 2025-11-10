@@ -264,8 +264,32 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
                 // Use the challenge_spec we already have to avoid re-querying
                 // Note: Errors here are logged but don't prevent the challenge from being marked as failed
                 // Some errors (like migration timeouts, schema check failures) are non-fatal
+                
+                // Load environment variables for this challenge
+                let env_vars = match state.load_challenge_env_vars(&compose_hash).await {
+                    Ok(vars) => {
+                        if !vars.is_empty() {
+                            info!(
+                                compose_hash = &compose_hash,
+                                count = vars.len(),
+                                "Loaded {} environment variables for challenge",
+                                vars.len()
+                            );
+                        }
+                        Some(vars)
+                    }
+                    Err(e) => {
+                        warn!(
+                            compose_hash = &compose_hash,
+                            error = %e,
+                            "Failed to load environment variables for challenge (continuing without them)"
+                        );
+                        None
+                    }
+                };
+                
                 match runner
-                    .run_challenge_by_compose_hash_with_spec(&compose_hash, Some(challenge_spec))
+                    .run_challenge_by_compose_hash_with_spec(&compose_hash, Some(challenge_spec), env_vars)
                     .await
                 {
                     Ok(_) => {

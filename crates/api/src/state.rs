@@ -468,4 +468,140 @@ impl AppState {
         let token = self.chutes_api_token.read().await;
         token.clone()
     }
+
+    /// Load challenge environment variables from database
+    /// Returns a HashMap of env var names to their decrypted values
+    pub async fn load_challenge_env_vars(
+        &self,
+        compose_hash: &str,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        let pool = self
+            .database_pool
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database pool not available"))?;
+
+        let encryption_key = &self.config.storage_config.encryption_key;
+
+        use platform_api_storage::decrypt_artifact;
+        use platform_api_storage::EncryptedArtifact;
+
+        // Load all env vars for this challenge
+        let rows = sqlx::query(
+            "SELECT key, encrypted_value, nonce FROM challenge_env_vars WHERE compose_hash = $1"
+        )
+        .bind(compose_hash)
+        .fetch_all(&**pool)
+        .await?;
+
+        let mut env_vars = HashMap::new();
+
+        // Convert encryption_key string to bytes
+        let key_bytes: Vec<u8> = if encryption_key.len() == 64 {
+            // Likely hex encoded (32 bytes = 64 hex chars)
+            hex::decode(encryption_key)
+                .map_err(|_| anyhow::anyhow!("Invalid hex encryption key"))?
+        } else {
+            // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
+            encryption_key.as_bytes().to_vec()
+        };
+        
+        // Ensure key is exactly 32 bytes for AES-256-GCM
+        if key_bytes.len() != 32 {
+            return Err(anyhow::anyhow!("Encryption key must be 32 bytes (got {} bytes)", key_bytes.len()));
+        }
+        
+        let key_array: [u8; 32] = key_bytes.try_into()
+            .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
+
+        for row in rows {
+            let env_key: String = row.try_get("key")?;
+            let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
+            let nonce: Vec<u8> = row.try_get("nonce")?;
+            
+            let encrypted = EncryptedArtifact {
+                ciphertext: encrypted_value,
+                nonce: nonce,
+                mac: vec![],
+            };
+
+            let decrypted_bytes = decrypt_artifact(&encrypted, &key_array)?;
+            let decrypted_value = String::from_utf8(decrypted_bytes)?;
+
+            env_vars.insert(env_key, decrypted_value);
+        }
+
+        if !env_vars.is_empty() {
+            info!(
+                compose_hash = compose_hash,
+                count = env_vars.len(),
+                "Loaded {} environment variables for challenge",
+                env_vars.len()
+            );
+        }
+
+        Ok(env_vars)
+    }
+
+    /// Store challenge environment variable in database (encrypted)
+    pub async fn store_challenge_env_var(
+        &self,
+        compose_hash: &str,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let pool = self
+            .database_pool
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database pool not available"))?;
+
+        let encryption_key = &self.config.storage_config.encryption_key;
+
+        use platform_api_storage::encrypt_artifact;
+        use platform_api_storage::EncryptedArtifact;
+
+        // Convert encryption_key string to bytes
+        let key_bytes: Vec<u8> = if encryption_key.len() == 64 {
+            // Likely hex encoded (32 bytes = 64 hex chars)
+            hex::decode(encryption_key)
+                .map_err(|_| anyhow::anyhow!("Invalid hex encryption key"))?
+        } else {
+            // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
+            encryption_key.as_bytes().to_vec()
+        };
+        
+        // Ensure key is exactly 32 bytes for AES-256-GCM
+        if key_bytes.len() != 32 {
+            return Err(anyhow::anyhow!("Encryption key must be 32 bytes (got {} bytes)", key_bytes.len()));
+        }
+        
+        let key_array: [u8; 32] = key_bytes.try_into()
+            .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
+
+        // Encrypt the value
+        let encrypted = encrypt_artifact(value.as_bytes(), &key_array)?;
+
+        // Store in database (upsert)
+        sqlx::query(
+            r#"
+            INSERT INTO challenge_env_vars (compose_hash, key, encrypted_value, nonce)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (compose_hash, key)
+            DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, nonce = EXCLUDED.nonce, updated_at = NOW()
+            "#
+        )
+        .bind(compose_hash)
+        .bind(key)
+        .bind(&encrypted.ciphertext)
+        .bind(&encrypted.nonce)
+        .execute(&**pool)
+        .await?;
+
+        info!(
+            compose_hash = compose_hash,
+            key = key,
+            "Stored environment variable for challenge"
+        );
+
+        Ok(())
+    }
 }

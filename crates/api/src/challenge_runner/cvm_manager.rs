@@ -37,6 +37,7 @@ impl CvmManager {
         challenge_name: &str,
         image: &str,
         compose_yaml: &str,
+        env_vars: Option<&HashMap<String, String>>,
     ) -> Result<CvmDeploymentResult> {
         info!(
             compose_hash = compose_hash,
@@ -126,6 +127,19 @@ impl CvmManager {
                             "CHALLENGE_ID={}",
                             challenge_id
                         )));
+
+                        // Add challenge environment variables from database
+                        if let Some(env_vars_map) = env_vars {
+                            for (key, value) in env_vars_map {
+                                // Skip if already present (shouldn't happen, but be safe)
+                                let env_entry = format!("{}={}", key, value);
+                                if !env.iter().any(|v| {
+                                    v.as_str().map(|s| s.starts_with(&format!("{}=", key))).unwrap_or(false)
+                                }) {
+                                    env.push(serde_yaml::Value::String(env_entry));
+                                }
+                            }
+                        }
                     }
                 }
             }

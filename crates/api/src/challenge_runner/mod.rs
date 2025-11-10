@@ -122,10 +122,12 @@ impl ChallengeRunner {
 
     /// Run a challenge in API mode by compose_hash
     /// If challenge_spec is provided, uses that data instead of querying the database
+    /// If env_vars is provided, injects those environment variables into the challenge
     pub async fn run_challenge_by_compose_hash_with_spec(
         &self,
         compose_hash: &str,
         challenge_spec: Option<&platform_api_models::ChallengeSpec>,
+        env_vars: Option<HashMap<String, String>>,
     ) -> Result<()> {
         info!(
             compose_hash = compose_hash,
@@ -213,6 +215,7 @@ impl ChallengeRunner {
                 &challenge.name,
                 &selected_image,
                 &challenge.compose_yaml,
+                env_vars.as_ref(),
             )
             .await?;
 
@@ -503,7 +506,7 @@ impl ChallengeRunner {
 
     /// Run a challenge in API mode by compose_hash (calls run_challenge_by_compose_hash_with_spec with None)
     pub async fn run_challenge_by_compose_hash(&self, compose_hash: &str) -> Result<()> {
-        self.run_challenge_by_compose_hash_with_spec(compose_hash, None)
+        self.run_challenge_by_compose_hash_with_spec(compose_hash, None, None)
             .await
     }
 
