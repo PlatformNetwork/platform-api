@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use tracing::warn;
 
-use super::{ORMQuery, ORMGatewayConfig};
+use super::{ORMGatewayConfig, ORMQuery};
 
 /// Query validator to ensure queries are safe and allowed
 pub struct QueryValidator {
@@ -27,7 +27,7 @@ impl QueryValidator {
             "IS NULL".to_string(),
             "IS NOT NULL".to_string(),
         ]);
-        
+
         let allowed_aggregations = HashSet::from([
             "COUNT".to_string(),
             "SUM".to_string(),
@@ -35,14 +35,14 @@ impl QueryValidator {
             "MIN".to_string(),
             "MAX".to_string(),
         ]);
-        
+
         Self {
             config,
             allowed_operators,
             allowed_aggregations,
         }
     }
-    
+
     /// Validate a query
     pub fn validate(&self, query: &ORMQuery) -> Result<()> {
         // Check operation is allowed
@@ -52,48 +52,51 @@ impl QueryValidator {
                 query.operation
             ));
         }
-        
+
         // Validate table name (prevent SQL injection)
         self.validate_identifier(&query.table, "table")?;
-        
+
         // Validate schema if present
         if let Some(schema) = &query.schema {
             self.validate_identifier(schema, "schema")?;
         }
-        
+
         // Validate columns
         if let Some(columns) = &query.columns {
             if columns.is_empty() {
                 return Err(anyhow::anyhow!("Column list cannot be empty"));
             }
-            
+
             for column in columns {
                 self.validate_identifier(column, "column")?;
             }
         }
-        
+
         // Validate filters
         if let Some(filters) = &query.filters {
             for filter in filters {
                 self.validate_identifier(&filter.column, "filter column")?;
-                
-                if !self.allowed_operators.contains(&filter.operator.to_uppercase()) {
+
+                if !self
+                    .allowed_operators
+                    .contains(&filter.operator.to_uppercase())
+                {
                     return Err(anyhow::anyhow!(
                         "Filter operator not allowed: {}",
                         filter.operator
                     ));
                 }
-                
+
                 // Validate filter value based on operator
                 self.validate_filter_value(&filter.operator, &filter.value)?;
             }
         }
-        
+
         // Validate order by
         if let Some(order_by) = &query.order_by {
             for order in order_by {
                 self.validate_identifier(&order.column, "order column")?;
-                
+
                 let direction = order.direction.to_uppercase();
                 if direction != "ASC" && direction != "DESC" {
                     return Err(anyhow::anyhow!(
@@ -103,13 +106,13 @@ impl QueryValidator {
                 }
             }
         }
-        
+
         // Validate limit
         if let Some(limit) = query.limit {
             if limit == 0 {
                 return Err(anyhow::anyhow!("Limit cannot be zero"));
             }
-            
+
             if limit > self.config.max_query_limit {
                 warn!(
                     requested = limit,
@@ -123,18 +126,21 @@ impl QueryValidator {
                 ));
             }
         }
-        
+
         // Validate aggregations
         if let Some(aggregations) = &query.aggregations {
             if !self.config.enable_aggregations {
                 return Err(anyhow::anyhow!("Aggregations are not enabled"));
             }
-            
+
             for agg in aggregations {
                 self.validate_identifier(&agg.column, "aggregation column")?;
                 self.validate_identifier(&agg.alias, "aggregation alias")?;
-                
-                if !self.allowed_aggregations.contains(&agg.function.to_uppercase()) {
+
+                if !self
+                    .allowed_aggregations
+                    .contains(&agg.function.to_uppercase())
+                {
                     return Err(anyhow::anyhow!(
                         "Aggregation function not allowed: {}",
                         agg.function
@@ -142,42 +148,48 @@ impl QueryValidator {
                 }
             }
         }
-        
+
         // Validate INSERT/UPDATE/DELETE operations
         match query.operation.as_str() {
             "insert" => {
-                let values = query.values.as_ref()
+                let values = query
+                    .values
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("INSERT requires 'values' field"))?;
-                
+
                 if values.is_empty() {
                     return Err(anyhow::anyhow!("INSERT requires at least one value"));
                 }
-                
+
                 if values.len() > 100 {
                     return Err(anyhow::anyhow!("INSERT cannot have more than 100 columns"));
                 }
-                
+
                 for cv in values {
                     self.validate_identifier(&cv.column, "INSERT column")?;
                     // Value is validated as JSON (already parsed)
                 }
             }
             "update" => {
-                let set_values = query.set_values.as_ref()
+                let set_values = query
+                    .set_values
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("UPDATE requires 'set_values' field"))?;
-                
+
                 if set_values.is_empty() {
                     return Err(anyhow::anyhow!("UPDATE requires at least one set value"));
                 }
-                
+
                 if set_values.len() > 100 {
-                    return Err(anyhow::anyhow!("UPDATE cannot update more than 100 columns"));
+                    return Err(anyhow::anyhow!(
+                        "UPDATE cannot update more than 100 columns"
+                    ));
                 }
-                
+
                 for cv in set_values {
                     self.validate_identifier(&cv.column, "UPDATE column")?;
                 }
-                
+
                 if query.filters.is_none() || query.filters.as_ref().unwrap().is_empty() {
                     return Err(anyhow::anyhow!("UPDATE requires WHERE clause (filters)"));
                 }
@@ -189,38 +201,54 @@ impl QueryValidator {
             }
             _ => {}
         }
-        
+
         Ok(())
     }
-    
+
     /// Validate identifier to prevent SQL injection
     fn validate_identifier(&self, identifier: &str, context: &str) -> Result<()> {
         // Check for empty
         if identifier.is_empty() {
             return Err(anyhow::anyhow!("{} cannot be empty", context));
         }
-        
+
         // Check length
         if identifier.len() > 128 {
             return Err(anyhow::anyhow!("{} name too long: {}", context, identifier));
         }
-        
+
         // Only allow alphanumeric, underscore, and dot (for schema.table)
-        if !identifier.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+        if !identifier
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
             return Err(anyhow::anyhow!(
                 "Invalid characters in {}: {}",
                 context,
                 identifier
             ));
         }
-        
+
         // Check for SQL keywords (basic list)
         let sql_keywords = [
-            "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE",
-            "ALTER", "TRUNCATE", "EXEC", "EXECUTE", "UNION", "GRANT",
-            "REVOKE", "COMMIT", "ROLLBACK", "SAVEPOINT",
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "DROP",
+            "CREATE",
+            "ALTER",
+            "TRUNCATE",
+            "EXEC",
+            "EXECUTE",
+            "UNION",
+            "GRANT",
+            "REVOKE",
+            "COMMIT",
+            "ROLLBACK",
+            "SAVEPOINT",
         ];
-        
+
         let upper = identifier.to_uppercase();
         if sql_keywords.iter().any(|&keyword| upper.contains(keyword)) {
             return Err(anyhow::anyhow!(
@@ -229,16 +257,12 @@ impl QueryValidator {
                 identifier
             ));
         }
-        
+
         Ok(())
     }
-    
+
     /// Validate filter value based on operator
-    fn validate_filter_value(
-        &self,
-        operator: &str,
-        value: &serde_json::Value,
-    ) -> Result<()> {
+    fn validate_filter_value(&self, operator: &str, value: &serde_json::Value) -> Result<()> {
         match operator.to_uppercase().as_str() {
             "IN" | "NOT IN" => {
                 if !value.is_array() {
@@ -247,7 +271,7 @@ impl QueryValidator {
                         operator
                     ));
                 }
-                
+
                 let arr = value.as_array().unwrap();
                 if arr.is_empty() {
                     return Err(anyhow::anyhow!(
@@ -255,7 +279,7 @@ impl QueryValidator {
                         operator
                     ));
                 }
-                
+
                 if arr.len() > 1000 {
                     return Err(anyhow::anyhow!(
                         "Array for {} operator too large (max 1000 items)",
@@ -278,14 +302,12 @@ impl QueryValidator {
                         operator
                     ));
                 }
-                
+
                 let pattern = value.as_str().unwrap();
                 // Basic check for excessive wildcards
                 let wildcard_count = pattern.chars().filter(|&c| c == '%' || c == '_').count();
                 if wildcard_count > 10 {
-                    return Err(anyhow::anyhow!(
-                        "Too many wildcards in LIKE pattern"
-                    ));
+                    return Err(anyhow::anyhow!("Too many wildcards in LIKE pattern"));
                 }
             }
             _ => {
@@ -297,7 +319,7 @@ impl QueryValidator {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -306,12 +328,12 @@ impl QueryValidator {
 mod tests {
     use super::*;
     use serde_json::json;
-    
+
     #[test]
     fn test_valid_query() {
         let config = ORMGatewayConfig::default();
         let validator = QueryValidator::new(config);
-        
+
         let query = ORMQuery {
             operation: "select".to_string(),
             table: "users".to_string(),
@@ -332,15 +354,15 @@ mod tests {
             values: None,
             set_values: None,
         };
-        
+
         assert!(validator.validate(&query).is_ok());
     }
-    
+
     #[test]
     fn test_sql_injection_prevention() {
         let config = ORMGatewayConfig::default();
         let validator = QueryValidator::new(config);
-        
+
         // Test SQL injection in table name
         let query = ORMQuery {
             operation: "select".to_string(),
@@ -355,7 +377,7 @@ mod tests {
             values: None,
             set_values: None,
         };
-        
+
         assert!(validator.validate(&query).is_err());
     }
 }

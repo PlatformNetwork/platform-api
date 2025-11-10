@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::{Id, KeyMaterial, Measurement, Nonce, Policy, Quote, Receipt, Report, SessionToken};
 use chrono::{DateTime, Utc};
-use super::{Id, Nonce, Quote, Report, Measurement, Policy, SessionToken, KeyMaterial, Receipt};
+use serde::{Deserialize, Serialize};
 
 /// Attestation type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -185,5 +185,3 @@ pub enum AttestationEventType {
     PolicyViolation,
     SessionExpired,
 }
-
-

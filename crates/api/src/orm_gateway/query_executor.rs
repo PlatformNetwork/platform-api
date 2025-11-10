@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use sqlx::{PgPool, Row, Column, TypeInfo};
+use sqlx::{Column, PgPool, Row, TypeInfo};
 use std::time::Instant;
 use tracing::info;
 
-use super::{ORMQuery, QueryResult, QueryFilter, ColumnValue};
+use super::{ColumnValue, ORMQuery, QueryFilter, QueryResult};
 
 /// Query executor for safe SQL execution
 pub struct QueryExecutor {
@@ -18,33 +18,36 @@ impl QueryExecutor {
             query_timeout,
         }
     }
-    
+
     /// Execute a validated query
     pub async fn execute(&self, query: &ORMQuery) -> Result<QueryResult> {
         let start_time = Instant::now();
-        
+
         match query.operation.as_str() {
             "select" => self.execute_select(query).await,
             "count" => self.execute_count(query).await,
             "insert" => self.execute_insert(query).await,
             "update" => self.execute_update(query).await,
             "delete" => self.execute_delete(query).await,
-            _ => Err(anyhow::anyhow!("Unsupported operation: {}", query.operation)),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported operation: {}",
+                query.operation
+            )),
         }
         .map(|mut result| {
             result.execution_time_ms = start_time.elapsed().as_millis() as u64;
             result
         })
     }
-    
+
     /// Execute SELECT query
     async fn execute_select(&self, query: &ORMQuery) -> Result<QueryResult> {
         let mut sql = String::new();
         let mut bind_values: Vec<serde_json::Value> = Vec::new();
-        
+
         // Build SELECT clause
         sql.push_str("SELECT ");
-        
+
         if let Some(aggregations) = &query.aggregations {
             // Build aggregation select
             let agg_parts: Vec<String> = aggregations
@@ -57,7 +60,7 @@ impl QueryExecutor {
         } else {
             sql.push_str("*");
         }
-        
+
         // FROM clause
         sql.push_str(" FROM ");
         if let Some(schema) = &query.schema {
@@ -65,7 +68,7 @@ impl QueryExecutor {
         } else {
             sql.push_str(&query.table);
         }
-        
+
         // WHERE clause
         if let Some(filters) = &query.filters {
             if !filters.is_empty() {
@@ -74,7 +77,7 @@ impl QueryExecutor {
                 sql.push_str(&where_parts.join(" AND "));
             }
         }
-        
+
         // GROUP BY clause (for aggregations)
         if query.aggregations.is_some() {
             // If we have aggregations, we need to group by non-aggregated columns
@@ -82,21 +85,28 @@ impl QueryExecutor {
                 let non_agg_columns: Vec<&String> = columns
                     .iter()
                     .filter(|col| {
-                        query.aggregations.as_ref().unwrap().iter()
+                        query
+                            .aggregations
+                            .as_ref()
+                            .unwrap()
+                            .iter()
                             .all(|agg| &agg.column != *col)
                     })
                     .collect();
-                
+
                 if !non_agg_columns.is_empty() {
                     sql.push_str(" GROUP BY ");
-                    sql.push_str(&non_agg_columns.iter()
-                        .map(|c| c.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "));
+                    sql.push_str(
+                        &non_agg_columns
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
                 }
             }
         }
-        
+
         // ORDER BY clause
         if let Some(order_by) = &query.order_by {
             if !order_by.is_empty() {
@@ -108,7 +118,7 @@ impl QueryExecutor {
                 sql.push_str(&order_parts.join(", "));
             }
         }
-        
+
         // LIMIT and OFFSET
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
@@ -116,32 +126,32 @@ impl QueryExecutor {
         if let Some(offset) = query.offset {
             sql.push_str(&format!(" OFFSET {}", offset));
         }
-        
+
         // Execute query
         info!(sql = &sql, "Executing SELECT query");
         let rows = self.execute_raw_query(&sql, bind_values).await?;
-        
+
         Ok(QueryResult {
             row_count: rows.len(),
             rows,
             execution_time_ms: 0, // Will be set by caller
         })
     }
-    
+
     /// Execute COUNT query
     async fn execute_count(&self, query: &ORMQuery) -> Result<QueryResult> {
         let mut sql = String::new();
         let mut bind_values: Vec<serde_json::Value> = Vec::new();
-        
+
         // Build COUNT query
         sql.push_str("SELECT COUNT(*) as count FROM ");
-        
+
         if let Some(schema) = &query.schema {
             sql.push_str(&format!("{}.{}", schema, query.table));
         } else {
             sql.push_str(&query.table);
         }
-        
+
         // WHERE clause
         if let Some(filters) = &query.filters {
             if !filters.is_empty() {
@@ -150,30 +160,34 @@ impl QueryExecutor {
                 sql.push_str(&where_parts.join(" AND "));
             }
         }
-        
+
         // Execute query
         info!(sql = &sql, "Executing COUNT query");
         let rows = self.execute_raw_query(&sql, bind_values).await?;
-        
+
         Ok(QueryResult {
             row_count: 1,
             rows,
             execution_time_ms: 0, // Will be set by caller
         })
     }
-    
+
     /// Execute INSERT query (all values are binded - no SQL injection possible)
     async fn execute_insert(&self, query: &ORMQuery) -> Result<QueryResult> {
-        let values = query.values.as_ref()
+        let values = query
+            .values
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("INSERT operation requires 'values' field"))?;
-        
+
         if values.is_empty() {
-            return Err(anyhow::anyhow!("INSERT operation requires at least one value"));
+            return Err(anyhow::anyhow!(
+                "INSERT operation requires at least one value"
+            ));
         }
-        
+
         let mut sql = String::new();
         let mut bind_values: Vec<serde_json::Value> = Vec::new();
-        
+
         // Build INSERT statement
         sql.push_str("INSERT INTO ");
         if let Some(schema) = &query.schema {
@@ -181,52 +195,56 @@ impl QueryExecutor {
         } else {
             sql.push_str(&query.table);
         }
-        
+
         // Build column list and placeholders
         let columns: Vec<String> = values.iter().map(|cv| cv.column.clone()).collect();
         // Simple placeholders - sqlx will handle JSONB typing automatically
-        let placeholders: Vec<String> = (1..=values.len())
-            .map(|i| format!("${}", i))
-            .collect();
-        
+        let placeholders: Vec<String> = (1..=values.len()).map(|i| format!("${}", i)).collect();
+
         sql.push_str(" (");
         sql.push_str(&columns.join(", "));
         sql.push_str(") VALUES (");
         sql.push_str(&placeholders.join(", "));
         sql.push_str(") RETURNING *");
-        
+
         // Bind values
         for cv in values {
             bind_values.push(cv.value.clone());
         }
-        
+
         // Execute query
         info!(sql = &sql, "Executing INSERT query");
         let rows = self.execute_raw_query(&sql, bind_values).await?;
-        
+
         Ok(QueryResult {
             row_count: rows.len(),
             rows,
             execution_time_ms: 0,
         })
     }
-    
+
     /// Execute UPDATE query (all values are binded - no SQL injection possible)
     async fn execute_update(&self, query: &ORMQuery) -> Result<QueryResult> {
-        let set_values = query.set_values.as_ref()
+        let set_values = query
+            .set_values
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("UPDATE operation requires 'set_values' field"))?;
-        
+
         if set_values.is_empty() {
-            return Err(anyhow::anyhow!("UPDATE operation requires at least one set value"));
+            return Err(anyhow::anyhow!(
+                "UPDATE operation requires at least one set value"
+            ));
         }
-        
+
         if query.filters.is_none() || query.filters.as_ref().unwrap().is_empty() {
-            return Err(anyhow::anyhow!("UPDATE operation requires WHERE clause (filters)"));
+            return Err(anyhow::anyhow!(
+                "UPDATE operation requires WHERE clause (filters)"
+            ));
         }
-        
+
         let mut sql = String::new();
         let mut bind_values: Vec<serde_json::Value> = Vec::new();
-        
+
         // Build UPDATE statement
         sql.push_str("UPDATE ");
         if let Some(schema) = &query.schema {
@@ -234,7 +252,7 @@ impl QueryExecutor {
         } else {
             sql.push_str(&query.table);
         }
-        
+
         // Build SET clause
         sql.push_str(" SET ");
         let set_parts: Vec<String> = set_values
@@ -247,34 +265,37 @@ impl QueryExecutor {
             })
             .collect();
         sql.push_str(&set_parts.join(", "));
-        
+
         // WHERE clause
         sql.push_str(" WHERE ");
-        let where_parts = self.build_where_clause(query.filters.as_ref().unwrap(), &mut bind_values)?;
+        let where_parts =
+            self.build_where_clause(query.filters.as_ref().unwrap(), &mut bind_values)?;
         sql.push_str(&where_parts.join(" AND "));
-        
+
         sql.push_str(" RETURNING *");
-        
+
         // Execute query
         info!(sql = &sql, "Executing UPDATE query");
         let rows = self.execute_raw_query(&sql, bind_values).await?;
-        
+
         Ok(QueryResult {
             row_count: rows.len(),
             rows,
             execution_time_ms: 0,
         })
     }
-    
+
     /// Execute DELETE query (all values are binded - no SQL injection possible)
     async fn execute_delete(&self, query: &ORMQuery) -> Result<QueryResult> {
         if query.filters.is_none() || query.filters.as_ref().unwrap().is_empty() {
-            return Err(anyhow::anyhow!("DELETE operation requires WHERE clause (filters)"));
+            return Err(anyhow::anyhow!(
+                "DELETE operation requires WHERE clause (filters)"
+            ));
         }
-        
+
         let mut sql = String::new();
         let mut bind_values: Vec<serde_json::Value> = Vec::new();
-        
+
         // Build DELETE statement
         sql.push_str("DELETE FROM ");
         if let Some(schema) = &query.schema {
@@ -282,25 +303,26 @@ impl QueryExecutor {
         } else {
             sql.push_str(&query.table);
         }
-        
+
         // WHERE clause
         sql.push_str(" WHERE ");
-        let where_parts = self.build_where_clause(query.filters.as_ref().unwrap(), &mut bind_values)?;
+        let where_parts =
+            self.build_where_clause(query.filters.as_ref().unwrap(), &mut bind_values)?;
         sql.push_str(&where_parts.join(" AND "));
-        
+
         sql.push_str(" RETURNING *");
-        
+
         // Execute query
         info!(sql = &sql, "Executing DELETE query");
         let rows = self.execute_raw_query(&sql, bind_values).await?;
-        
+
         Ok(QueryResult {
             row_count: rows.len(),
             rows,
             execution_time_ms: 0,
         })
     }
-    
+
     /// Build WHERE clause parts
     fn build_where_clause(
         &self,
@@ -308,17 +330,24 @@ impl QueryExecutor {
         bind_values: &mut Vec<serde_json::Value>,
     ) -> Result<Vec<String>> {
         let mut parts = Vec::new();
-        
+
         for filter in filters {
             let part = match filter.operator.to_uppercase().as_str() {
                 "=" | "!=" | "<" | "<=" | ">" | ">=" => {
                     bind_values.push(filter.value.clone());
-                    format!("{} {} ${}", filter.column, filter.operator, bind_values.len())
+                    format!(
+                        "{} {} ${}",
+                        filter.column,
+                        filter.operator,
+                        bind_values.len()
+                    )
                 }
                 "IN" | "NOT IN" => {
-                    let array = filter.value.as_array()
+                    let array = filter
+                        .value
+                        .as_array()
                         .ok_or_else(|| anyhow::anyhow!("IN operator requires array value"))?;
-                    
+
                     let placeholders: Vec<String> = array
                         .iter()
                         .map(|v| {
@@ -326,24 +355,34 @@ impl QueryExecutor {
                             format!("${}", bind_values.len())
                         })
                         .collect();
-                    
-                    format!("{} {} ({})", filter.column, filter.operator, placeholders.join(", "))
+
+                    format!(
+                        "{} {} ({})",
+                        filter.column,
+                        filter.operator,
+                        placeholders.join(", ")
+                    )
                 }
                 "LIKE" | "NOT LIKE" => {
                     bind_values.push(filter.value.clone());
-                    format!("{} {} ${}", filter.column, filter.operator, bind_values.len())
+                    format!(
+                        "{} {} ${}",
+                        filter.column,
+                        filter.operator,
+                        bind_values.len()
+                    )
                 }
                 "IS NULL" => format!("{} IS NULL", filter.column),
                 "IS NOT NULL" => format!("{} IS NOT NULL", filter.column),
                 _ => return Err(anyhow::anyhow!("Unsupported operator: {}", filter.operator)),
             };
-            
+
             parts.push(part);
         }
-        
+
         Ok(parts)
     }
-    
+
     /// Execute raw SQL query with bindings
     async fn execute_raw_query(
         &self,
@@ -352,7 +391,7 @@ impl QueryExecutor {
     ) -> Result<Vec<serde_json::Value>> {
         // Create a dynamic query
         let mut query = sqlx::query(sql);
-        
+
         // Bind values
         for value in bind_values {
             query = match value {
@@ -374,34 +413,32 @@ impl QueryExecutor {
                 }
             };
         }
-        
+
         // Set query timeout
         let query = query.persistent(false);
-        
+
         // Execute with timeout
         let rows_result = tokio::time::timeout(
             std::time::Duration::from_secs(self.query_timeout),
             query.fetch_all(&self.db_pool),
         )
         .await
-        .context(format!("Query timeout after {} seconds", self.query_timeout));
-        
+        .context(format!(
+            "Query timeout after {} seconds",
+            self.query_timeout
+        ));
+
         let rows = match rows_result {
             Ok(Ok(rows)) => rows,
             Ok(Err(e)) => {
                 // SQL execution error - extract detailed error information
                 let mut error_msg = format!("Query execution failed for SQL: {}", sql);
-                
+
                 // Extract PostgreSQL error details if available
                 if let Some(db_err) = e.as_database_error() {
-                    error_msg.push_str(&format!(
-                        "\nPostgreSQL Error Code: {:?}",
-                        db_err.code()
-                    ));
-                    error_msg.push_str(&format!(
-                        "\nPostgreSQL Error Message: {}",
-                        db_err.message()
-                    ));
+                    error_msg.push_str(&format!("\nPostgreSQL Error Code: {:?}", db_err.code()));
+                    error_msg
+                        .push_str(&format!("\nPostgreSQL Error Message: {}", db_err.message()));
                     if let Some(constraint) = db_err.constraint() {
                         error_msg.push_str(&format!("\nConstraint: {}", constraint));
                     }
@@ -412,7 +449,7 @@ impl QueryExecutor {
                     // Fallback to general error message
                     error_msg.push_str(&format!("\nError: {}", e));
                 }
-                
+
                 return Err(anyhow::anyhow!(error_msg));
             }
             Err(_) => {
@@ -423,12 +460,12 @@ impl QueryExecutor {
                 ));
             }
         };
-        
+
         // Convert rows to JSON
         let mut json_rows = Vec::new();
         for row in rows {
             let mut json_row = serde_json::Map::new();
-            
+
             // Get column names and values
             for (i, column) in row.columns().iter().enumerate() {
                 let column_name = column.name();
@@ -479,13 +516,13 @@ impl QueryExecutor {
                     }
                     _ => serde_json::Value::Null,
                 };
-                
+
                 json_row.insert(column_name.to_string(), value);
             }
-            
+
             json_rows.push(serde_json::Value::Object(json_row));
         }
-        
+
         Ok(json_rows)
     }
 }

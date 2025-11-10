@@ -5,23 +5,26 @@ use axum::{
 };
 use uuid::Uuid;
 
-use platform_api_models::{
-    CreateChallengeRequest, UpdateChallengeRequest, ChallengeListResponse, 
-    ChallengeDetailResponse, ChallengeMetadata, PlatformResult
-};
 use crate::state::AppState;
+use platform_api_models::{
+    ChallengeDetailResponse, ChallengeListResponse, ChallengeMetadata, CreateChallengeRequest,
+    PlatformResult, UpdateChallengeRequest,
+};
 
 /// List challenges handler
 pub async fn list_challenges_handler(
     state: State<AppState>,
     params: Query<ListChallengesParams>,
 ) -> PlatformResult<Json<ChallengeListResponse>> {
-    let challenges = state.storage.list_challenges(
-        params.page.unwrap_or(1),
-        params.per_page.unwrap_or(20),
-        params.status.clone(),
-        params.visibility.clone(),
-    ).await?;
+    let challenges = state
+        .storage
+        .list_challenges(
+            params.page.unwrap_or(1),
+            params.per_page.unwrap_or(20),
+            params.status.clone(),
+            params.visibility.clone(),
+        )
+        .await?;
 
     Ok(Json(challenges))
 }
@@ -80,5 +83,3 @@ pub struct ListChallengesParams {
     pub status: Option<String>,
     pub visibility: Option<String>,
 }
-
-

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::Hotkey;
 use chrono::{DateTime, Utc};
-use super::{Hotkey};
+use serde::{Deserialize, Serialize};
 
 /// Subnet configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,5 +176,3 @@ pub struct ConfigMetrics {
     pub most_changed_field: String,
     pub config_stability_score: f64,
 }
-
-

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use super::{Hotkey, Id, Score};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use super::{Id, Hotkey, Score};
 
 /// Emission type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,9 +63,15 @@ impl Default for EmissionSchedule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DistributionCurve {
     Linear,
-    Exponential { decay_factor: f64 },
-    Step { intervals: Vec<(DateTime<Utc>, f64)> },
-    Custom { points: Vec<(f64, f64)> },
+    Exponential {
+        decay_factor: f64,
+    },
+    Step {
+        intervals: Vec<(DateTime<Utc>, f64)>,
+    },
+    Custom {
+        points: Vec<(f64, f64)>,
+    },
 }
 
 /// Emission distribution
@@ -249,5 +255,3 @@ pub struct EmissionReport {
     pub top_recipients: Vec<EmissionRecipient>,
     pub emission_trends: BTreeMap<String, f64>,
 }
-
-

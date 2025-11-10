@@ -8,8 +8,8 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::models::{JobCache, JobStatus};
+use crate::redis_client::{create_job_log, create_job_progress};
 use crate::state::AppState;
-use crate::redis_client::{create_job_progress, create_job_log};
 use platform_api_models::ValidatorChallengeState;
 
 /// Request to send a job to validators
@@ -62,10 +62,7 @@ impl JobDistributor {
         );
 
         // Get count of active validators
-        let validator_count = self
-            .state
-            .get_validator_count(&request.compose_hash)
-            .await;
+        let validator_count = self.state.get_validator_count(&request.compose_hash).await;
 
         if validator_count == 0 {
             warn!(
@@ -120,13 +117,16 @@ impl JobDistributor {
                 request.job_id.clone(),
                 "distributing".to_string(),
                 0.0,
-                None, None, None, None,
+                None,
+                None,
+                None,
+                None,
                 None,
             );
             if let Err(e) = redis.set_job_progress(&progress).await {
                 warn!("Failed to log job progress to Redis: {}", e);
             }
-            
+
             let log_entry = create_job_log(
                 "info".to_string(),
                 format!("Job {} started, distributing to validators", request.job_id),
@@ -151,8 +151,8 @@ impl JobDistributor {
             "compose_hash": request.compose_hash,
         });
 
-        let job_message_str = serde_json::to_string(&job_message)
-            .context("Failed to serialize job message")?;
+        let job_message_str =
+            serde_json::to_string(&job_message).context("Failed to serialize job message")?;
 
         // Send job to each active validator via WebSocket
         let mut assigned_validators = Vec::new();
@@ -170,7 +170,7 @@ impl JobDistributor {
                         );
                         continue;
                     }
-                    
+
                     job_cache.assigned_validators.push(validator_hotkey.clone());
                     assigned_validators.push(validator_hotkey.clone());
                     info!(
@@ -195,26 +195,33 @@ impl JobDistributor {
         // Update job cache status
         if !assigned_validators.is_empty() {
             job_cache.mark_running(assigned_validators[0].clone());
-            
+
             let mut cache = self.state.job_cache.write().await;
             cache.insert(request.job_id.clone(), job_cache.clone());
-            
+
             // Log to Redis
             if let Some(redis) = &self.state.redis_client {
                 let progress = create_job_progress(
                     request.job_id.clone(),
                     "running".to_string(),
                     0.0,
-                    None, None, None, None,
+                    None,
+                    None,
+                    None,
+                    None,
                     None,
                 );
                 if let Err(e) = redis.set_job_progress(&progress).await {
                     warn!("Failed to log job progress to Redis: {}", e);
                 }
-                
+
                 let log_entry = create_job_log(
                     "info".to_string(),
-                    format!("Job {} assigned to {} validators", request.job_id, assigned_validators.len()),
+                    format!(
+                        "Job {} assigned to {} validators",
+                        request.job_id,
+                        assigned_validators.len()
+                    ),
                     Some(serde_json::json!({
                         "validator_count": assigned_validators.len(),
                         "validators": assigned_validators,
@@ -229,20 +236,23 @@ impl JobDistributor {
             job_cache.mark_failed();
             let mut cache = self.state.job_cache.write().await;
             cache.insert(request.job_id.clone(), job_cache.clone());
-            
+
             // Log to Redis
             if let Some(redis) = &self.state.redis_client {
                 let progress = create_job_progress(
                     request.job_id.clone(),
                     "failed".to_string(),
                     0.0,
-                    None, None, None, None,
+                    None,
+                    None,
+                    None,
+                    None,
                     Some("No validators available".to_string()),
                 );
                 if let Err(e) = redis.set_job_progress(&progress).await {
                     warn!("Failed to log job progress to Redis: {}", e);
                 }
-                
+
                 let log_entry = create_job_log(
                     "error".to_string(),
                     format!("Job {} failed: no validators available", request.job_id),
@@ -263,10 +273,7 @@ impl JobDistributor {
     }
 
     /// Get list of active validator hotkeys for a specific compose_hash
-    async fn get_active_validators_for_compose_hash(
-        &self,
-        compose_hash: &str,
-    ) -> Vec<String> {
+    async fn get_active_validators_for_compose_hash(&self, compose_hash: &str) -> Vec<String> {
         let status_map = self.state.validator_challenge_status.read().await;
         let mut validators = Vec::new();
 
@@ -301,29 +308,41 @@ impl JobDistributor {
             } else {
                 job_cache.mark_completed();
             }
-            
+
             // Update cache
             {
                 let mut cache = self.state.job_cache.write().await;
                 cache.insert(result.job_id.clone(), job_cache.clone());
             }
-            
+
             // Log to Redis
             if let Some(redis) = &self.state.redis_client {
-                let status = if result.error.is_some() { "failed" } else { "completed" };
+                let status = if result.error.is_some() {
+                    "failed"
+                } else {
+                    "completed"
+                };
                 let progress = create_job_progress(
                     result.job_id.clone(),
                     status.to_string(),
                     100.0,
-                    None, None, None, None,
+                    None,
+                    None,
+                    None,
+                    None,
                     result.error.clone(),
                 );
                 if let Err(e) = redis.set_job_progress(&progress).await {
                     warn!("Failed to log job progress to Redis: {}", e);
                 }
-                
+
                 let log_entry = create_job_log(
-                    if result.error.is_some() { "error" } else { "info" }.to_string(),
+                    if result.error.is_some() {
+                        "error"
+                    } else {
+                        "info"
+                    }
+                    .to_string(),
                     if let Some(ref error) = result.error {
                         format!("Job {} failed: {}", result.job_id, error)
                     } else {
@@ -338,7 +357,7 @@ impl JobDistributor {
                     warn!("Failed to log job event to Redis: {}", e);
                 }
             }
-            
+
             // Forward result to challenge CVM if URL is available
             // Note: The actual forwarding is handled in websocket.rs when receiving job_result from validators
             if let Some(challenge_cvm_ws_url) = &job_cache.challenge_cvm_ws_url {
@@ -353,11 +372,10 @@ impl JobDistributor {
                     "No challenge_cvm_ws_url in job cache, cannot forward result"
                 );
             }
-            
+
             Ok(())
         } else {
             Err(anyhow!("Job {} not found in cache", result.job_id))
         }
     }
 }
-

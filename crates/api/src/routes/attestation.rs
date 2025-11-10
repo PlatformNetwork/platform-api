@@ -5,17 +5,17 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chrono::{DateTime, Utc, Duration};
-use serde::Serialize;
-use ring::rand::{SecureRandom, SystemRandom};
+use chrono::{DateTime, Duration, Utc};
 use hex::encode as hex_encode;
+use ring::rand::{SecureRandom, SystemRandom};
+use serde::Serialize;
 use uuid::Uuid;
 
-use platform_api_models::{
-    AttestationRequest, AttestationResponse, KeyReleaseRequest, 
-    KeyReleaseResponse, AttestationSession
-};
 use crate::state::AppState;
+use platform_api_models::{
+    AttestationRequest, AttestationResponse, AttestationSession, KeyReleaseRequest,
+    KeyReleaseResponse,
+};
 
 /// Create attestation router
 pub fn create_router() -> Router<AppState> {
@@ -35,7 +35,10 @@ pub async fn attest(
     State(state): State<AppState>,
     Json(request): Json<AttestationRequest>,
 ) -> Result<Json<AttestationResponse>, StatusCode> {
-    let response = state.attestation.verify_attestation(request).await
+    let response = state
+        .attestation
+        .verify_attestation(request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
@@ -53,9 +56,13 @@ pub async fn create_challenge(
 ) -> Result<Json<ChallengeResponse>, StatusCode> {
     let rng = SystemRandom::new();
     let mut nonce = [0u8; 32];
-    rng.fill(&mut nonce).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    rng.fill(&mut nonce)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let expires_at = Utc::now() + Duration::seconds(300);
-    Ok(Json(ChallengeResponse { nonce: hex_encode(nonce), expires_at }))
+    Ok(Json(ChallengeResponse {
+        nonce: hex_encode(nonce),
+        expires_at,
+    }))
 }
 
 /// Verify attestation (alias to /attest for clearer semantics)
@@ -63,7 +70,10 @@ pub async fn verify_attestation(
     State(state): State<AppState>,
     Json(request): Json<AttestationRequest>,
 ) -> Result<Json<AttestationResponse>, StatusCode> {
-    let response = state.attestation.verify_attestation(request).await
+    let response = state
+        .attestation
+        .verify_attestation(request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(response))
 }
@@ -73,7 +83,10 @@ pub async fn get_attestation_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AttestationSession>, StatusCode> {
-    let session = state.attestation.get_session(id).await
+    let session = state
+        .attestation
+        .get_session(id)
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     Ok(Json(session))
@@ -84,7 +97,10 @@ pub async fn release_key(
     State(state): State<AppState>,
     Json(request): Json<KeyReleaseRequest>,
 ) -> Result<Json<KeyReleaseResponse>, StatusCode> {
-    let response = state.kbs.release_key(request).await
+    let response = state
+        .kbs
+        .release_key(request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
@@ -100,7 +116,10 @@ pub async fn verify_key(
         session_token: request.session_token.clone(),
         policy: request.policy.clone(),
     };
-    let response = state.kbs.verify_key(kbs_request).await
+    let response = state
+        .kbs
+        .verify_key(kbs_request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
@@ -110,7 +129,10 @@ pub async fn verify_key(
 pub async fn list_policies(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<platform_api_models::AttestationPolicy>>, StatusCode> {
-    let policies = state.attestation.list_policies().await
+    let policies = state
+        .attestation
+        .list_policies()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(policies))
@@ -121,7 +143,10 @@ pub async fn get_policy(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<platform_api_models::AttestationPolicy>, StatusCode> {
-    let policy = state.attestation.get_policy(&id).await
+    let policy = state
+        .attestation
+        .get_policy(&id)
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     Ok(Json(policy))
@@ -154,5 +179,3 @@ pub struct KeyInfo {
     pub usage_count: u32,
     pub max_usage: Option<u32>,
 }
-
-

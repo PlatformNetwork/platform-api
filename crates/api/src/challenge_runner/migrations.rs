@@ -32,7 +32,7 @@ impl MigrationRunner {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-    
+
     /// Apply migrations to a challenge schema
     pub async fn apply_migrations(
         &self,
@@ -40,22 +40,22 @@ impl MigrationRunner {
         migrations: Vec<Migration>,
     ) -> Result<Vec<String>> {
         info!(schema = schema_name, "Applying migrations");
-        
+
         // Ensure schema exists
         self.ensure_schema(schema_name).await?;
-        
+
         // Ensure migrations table exists
         self.ensure_migrations_table(schema_name).await?;
-        
+
         // Get already applied migrations
         let applied = self.get_applied_migrations(schema_name).await?;
         let applied_map: HashMap<String, AppliedMigration> = applied
             .into_iter()
             .map(|m| (m.version.clone(), m))
             .collect();
-        
+
         let mut applied_versions = Vec::new();
-        
+
         // Apply each migration in order
         for migration in migrations {
             if let Some(existing) = applied_map.get(&migration.version) {
@@ -74,14 +74,14 @@ impl MigrationRunner {
                         existing.checksum
                     ));
                 }
-                
+
                 info!(
                     version = &migration.version,
                     "Migration already applied, skipping"
                 );
                 continue;
             }
-            
+
             // Apply the migration
             match self.apply_single_migration(schema_name, &migration).await {
                 Ok(_) => {
@@ -101,36 +101,35 @@ impl MigrationRunner {
                     );
                     return Err(e).context(format!(
                         "Failed to apply migration {} - {}",
-                        migration.version,
-                        migration.name
+                        migration.version, migration.name
                     ));
                 }
             }
         }
-        
+
         info!(
             schema = schema_name,
             applied_count = applied_versions.len(),
             "Migrations completed"
         );
-        
+
         Ok(applied_versions)
     }
-    
+
     /// Ensure schema exists
     pub async fn ensure_schema(&self, schema_name: &str) -> Result<()> {
         // Validate schema name to prevent SQL injection
         if !schema_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Err(anyhow::anyhow!("Invalid schema name: {}", schema_name));
         }
-        
+
         // First, check if schema exists by querying information_schema
         let schema_exists = match sqlx::query_scalar::<_, Option<String>>(
             r#"
             SELECT schema_name 
             FROM information_schema.schemata 
             WHERE schema_name = $1
-            "#
+            "#,
         )
         .bind(schema_name)
         .fetch_optional(&self.pool)
@@ -147,20 +146,17 @@ impl MigrationRunner {
                 false // Assume schema doesn't exist and try to create
             }
         };
-        
+
         if schema_exists {
-            info!(schema = schema_name, "Schema already exists, skipping creation");
+            info!(
+                schema = schema_name,
+                "Schema already exists, skipping creation"
+            );
         } else {
             // Schema doesn't exist, create it
-            let create_query = format!(
-                "CREATE SCHEMA {} AUTHORIZATION CURRENT_USER",
-                schema_name
-            );
-            
-            match sqlx::query(&create_query)
-                .execute(&self.pool)
-                .await
-            {
+            let create_query = format!("CREATE SCHEMA {} AUTHORIZATION CURRENT_USER", schema_name);
+
+            match sqlx::query(&create_query).execute(&self.pool).await {
                 Ok(_) => {
                     info!(schema = schema_name, "Created database schema");
                 }
@@ -168,25 +164,26 @@ impl MigrationRunner {
                     // If schema already exists (race condition), that's okay
                     let error_msg = e.to_string();
                     if error_msg.contains("already exists") || error_msg.contains("42P07") {
-                        info!(schema = schema_name, "Schema already exists (created concurrently)");
+                        info!(
+                            schema = schema_name,
+                            "Schema already exists (created concurrently)"
+                        );
                     } else {
-                        return Err(anyhow::anyhow!("Failed to create schema '{}': {}", schema_name, e))
-                            .context("Database connection or permission issue?");
+                        return Err(anyhow::anyhow!(
+                            "Failed to create schema '{}': {}",
+                            schema_name,
+                            e
+                        ))
+                        .context("Database connection or permission issue?");
                     }
                 }
             }
         }
-        
+
         // Grant permissions (this is idempotent, safe to run even if already granted)
-        let grant_query = format!(
-            "GRANT ALL ON SCHEMA {} TO CURRENT_USER",
-            schema_name
-        );
-        
-        if let Err(e) = sqlx::query(&grant_query)
-            .execute(&self.pool)
-            .await
-        {
+        let grant_query = format!("GRANT ALL ON SCHEMA {} TO CURRENT_USER", schema_name);
+
+        if let Err(e) = sqlx::query(&grant_query).execute(&self.pool).await {
             // Log warning but don't fail - permissions might already be set
             tracing::warn!(
                 schema = schema_name,
@@ -194,10 +191,10 @@ impl MigrationRunner {
                 "Failed to grant schema permissions (may already be granted)"
             );
         }
-        
+
         Ok(())
     }
-    
+
     /// Ensure migrations table exists in schema
     async fn ensure_migrations_table(&self, schema_name: &str) -> Result<()> {
         let query = format!(
@@ -211,15 +208,15 @@ impl MigrationRunner {
             "#,
             schema_name
         );
-        
+
         sqlx::query(&query)
             .execute(&self.pool)
             .await
             .context("Failed to create migrations table")?;
-        
+
         Ok(())
     }
-    
+
     /// Get list of applied migrations
     async fn get_applied_migrations(&self, schema_name: &str) -> Result<Vec<AppliedMigration>> {
         let query = format!(
@@ -230,12 +227,12 @@ impl MigrationRunner {
             "#,
             schema_name
         );
-        
+
         let rows = sqlx::query(&query)
             .fetch_all(&self.pool)
             .await
             .unwrap_or_default();
-        
+
         let migrations = rows
             .into_iter()
             .map(|row| AppliedMigration {
@@ -245,16 +242,12 @@ impl MigrationRunner {
                 checksum: row.get("checksum"),
             })
             .collect();
-        
+
         Ok(migrations)
     }
-    
+
     /// Apply a single migration
-    async fn apply_single_migration(
-        &self,
-        schema_name: &str,
-        migration: &Migration,
-    ) -> Result<()> {
+    async fn apply_single_migration(&self, schema_name: &str, migration: &Migration) -> Result<()> {
         info!(
             schema = schema_name,
             version = &migration.version,
@@ -262,7 +255,7 @@ impl MigrationRunner {
             sql_length = migration.sql.len(),
             "Starting migration application"
         );
-        
+
         // Start transaction
         info!(schema = schema_name, "Starting database transaction");
         let mut tx = match self.pool.begin().await {
@@ -275,14 +268,15 @@ impl MigrationRunner {
                 return Err(anyhow::anyhow!("Failed to start transaction: {}", e));
             }
         };
-        
+
         // Set search path
         let set_path = format!("SET search_path TO {}, public", schema_name);
-        info!(schema = schema_name, search_path = &set_path, "Setting search_path");
-        match sqlx::query(&set_path)
-            .execute(&mut *tx)
-            .await
-        {
+        info!(
+            schema = schema_name,
+            search_path = &set_path,
+            "Setting search_path"
+        );
+        match sqlx::query(&set_path).execute(&mut *tx).await {
             Ok(_) => {
                 info!(schema = schema_name, "✅ search_path set successfully");
             }
@@ -292,61 +286,58 @@ impl MigrationRunner {
                 return Err(anyhow::anyhow!("Failed to set search_path: {}", e));
             }
         }
-        
+
         // Execute migration SQL
         // Split SQL into individual statements (separated by semicolons)
         // We need to handle multi-line statements correctly and preserve statement integrity
         // Strategy: Split by semicolon, but only when it's at the end of a trimmed line or followed by whitespace
         let mut sql_statements = Vec::new();
         let mut current_statement = String::new();
-        
+
         // Process line by line to handle multi-line statements correctly
         for line in migration.sql.lines() {
             let trimmed_line = line.trim();
-            
+
             // Skip empty lines and full-line comments
             if trimmed_line.is_empty() || trimmed_line.starts_with("--") {
                 continue;
             }
-            
+
             // Remove inline comments (but preserve semicolons in comments)
             let line_without_comments = trimmed_line
                 .split("--")
                 .next()
                 .unwrap_or(trimmed_line)
                 .trim();
-            
+
             if line_without_comments.is_empty() {
                 continue;
             }
-            
+
             // Add line to current statement
             if !current_statement.is_empty() {
                 current_statement.push('\n');
             }
             current_statement.push_str(line_without_comments);
-            
+
             // Check if line ends with semicolon (statement terminator)
             if line_without_comments.ends_with(';') {
                 // Remove trailing semicolon for this statement
-                let statement = current_statement
-                    .trim_end_matches(';')
-                    .trim()
-                    .to_string();
-                
+                let statement = current_statement.trim_end_matches(';').trim().to_string();
+
                 if !statement.is_empty() {
                     sql_statements.push(statement);
                 }
                 current_statement.clear();
             }
         }
-        
+
         // Add any remaining statement (in case last statement doesn't end with semicolon)
         let remaining = current_statement.trim().to_string();
         if !remaining.is_empty() {
             sql_statements.push(remaining);
         }
-        
+
         info!(
             schema = schema_name,
             version = &migration.version,
@@ -355,12 +346,12 @@ impl MigrationRunner {
             "Executing migration SQL (split into {} statements)",
             sql_statements.len()
         );
-        
+
         for (idx, statement) in sql_statements.iter().enumerate() {
             if statement.trim().is_empty() {
                 continue;
             }
-            
+
             info!(
                 schema = schema_name,
                 version = &migration.version,
@@ -371,11 +362,8 @@ impl MigrationRunner {
                 idx + 1,
                 sql_statements.len()
             );
-            
-            match sqlx::query(statement)
-                .execute(&mut *tx)
-                .await
-            {
+
+            match sqlx::query(statement).execute(&mut *tx).await {
                 Ok(result) => {
                     info!(
                         schema = schema_name,
@@ -402,7 +390,7 @@ impl MigrationRunner {
                         idx + 1,
                         sql_statements.len()
                     );
-                    
+
                     // Try to extract database error details if available
                     if let Some(db_err) = e.as_database_error() {
                         error!(
@@ -415,7 +403,7 @@ impl MigrationRunner {
                             "PostgreSQL error details"
                         );
                     }
-                    
+
                     let _ = tx.rollback().await;
                     return Err(anyhow::anyhow!(
                         "Failed to execute migration SQL statement {}/{} for {} - {}: {}",
@@ -428,14 +416,14 @@ impl MigrationRunner {
                 }
             }
         }
-        
+
         info!(
             schema = schema_name,
             version = &migration.version,
             total_statements = sql_statements.len(),
             "✅ All migration SQL statements executed successfully"
         );
-        
+
         // Record migration
         let record_query = format!(
             r#"
@@ -444,7 +432,7 @@ impl MigrationRunner {
             "#,
             schema_name
         );
-        
+
         info!(
             schema = schema_name,
             version = &migration.version,
@@ -482,7 +470,7 @@ impl MigrationRunner {
                 ));
             }
         }
-        
+
         // Commit transaction
         info!(schema = schema_name, "Committing transaction");
         match tx.commit().await {
@@ -508,36 +496,30 @@ impl MigrationRunner {
                 ));
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Rollback a migration (if supported)
-    pub async fn rollback_migration(
-        &self,
-        schema_name: &str,
-        version: &str,
-    ) -> Result<()> {
+    pub async fn rollback_migration(&self, schema_name: &str, version: &str) -> Result<()> {
         warn!(
             schema = schema_name,
             version = version,
             "Rollback not implemented yet"
         );
-        
+
         // Rollback functionality would require storing down migrations
         // Currently not implemented to keep migrations forward-only
-        
+
         Err(anyhow::anyhow!("Rollback not implemented"))
     }
-    
+
     /// Get migration status for a schema
     pub async fn get_migration_status(&self, schema_name: &str) -> Result<MigrationStatus> {
         let applied = self.get_applied_migrations(schema_name).await?;
-        
-        let latest_version = applied
-            .last()
-            .map(|m| m.version.clone());
-        
+
+        let latest_version = applied.last().map(|m| m.version.clone());
+
         Ok(MigrationStatus {
             schema_name: schema_name.to_string(),
             applied_count: applied.len(),

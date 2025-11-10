@@ -1,12 +1,6 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::post,
-    Router,
-};
-use serde::{Deserialize, Serialize};
+use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
@@ -95,7 +89,8 @@ pub async fn submit_result(
     Json(req): Json<ResultSubmitRequest>,
 ) -> Result<Json<ResultSubmitResponse>, StatusCode> {
     let receipt = format!("result:{}:{}", req.session_token, Utc::now());
-    Ok(Json(ResultSubmitResponse { stored: true, receipt }))
+    Ok(Json(ResultSubmitResponse {
+        stored: true,
+        receipt,
+    }))
 }
-
-

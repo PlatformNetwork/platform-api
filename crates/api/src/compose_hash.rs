@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use sha2::{Sha256, Digest};
-use std::path::Path;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::Path;
 
 /// Calculate SHA256 hash of docker-compose file for security attestation
-/// 
+///
 /// This hash is used to verify that all services are running the same
 /// docker-compose configuration, ensuring network isolation and security.
 pub fn calculate_compose_hash(compose_file: &str) -> Result<String> {
@@ -53,30 +53,32 @@ pub fn calculate_compose_hash(compose_file: &str) -> Result<String> {
     let hash = hasher.finalize();
     let hash_hex = hex::encode(hash);
 
-    tracing::info!("Calculated compose hash from: {}", used_path.as_deref().unwrap_or("unknown"));
+    tracing::info!(
+        "Calculated compose hash from: {}",
+        used_path.as_deref().unwrap_or("unknown")
+    );
     tracing::info!("   Compose hash: {}", hash_hex);
 
     Ok(hash_hex)
 }
 
 /// Get compose hash with environment mode prefix
-/// 
+///
 /// In dev mode, prefixes hash with "dev-" to ensure isolation from production
 pub fn get_compose_hash_with_env_mode() -> Result<String> {
     // Get environment mode (dev or prod)
-    let env_mode = std::env::var("ENVIRONMENT_MODE")
-        .unwrap_or_else(|_| {
-            // Auto-detect: if DEV_MODE is set, use dev
-            if std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true" {
-                "dev".to_string()
-            } else {
-                "prod".to_string()
-            }
-        });
+    let env_mode = std::env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| {
+        // Auto-detect: if DEV_MODE is set, use dev
+        if std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true" {
+            "dev".to_string()
+        } else {
+            "prod".to_string()
+        }
+    });
 
     // Get compose file path from environment or use default
-    let compose_file = std::env::var("COMPOSE_FILE")
-        .unwrap_or_else(|_| "docker-compose.yml".to_string());
+    let compose_file =
+        std::env::var("COMPOSE_FILE").unwrap_or_else(|_| "docker-compose.yml".to_string());
 
     let hash = calculate_compose_hash(&compose_file)?;
 
@@ -89,21 +91,21 @@ pub fn get_compose_hash_with_env_mode() -> Result<String> {
 }
 
 /// Normalize docker-compose content for consistent hashing
-/// 
+///
 /// Removes comments and normalizes whitespace to ensure same hash
 /// for functionally identical configurations
 fn normalize_compose_content(content: &str) -> String {
     let mut normalized = String::new();
-    
+
     for line in content.lines() {
         // Remove comments (lines starting with # or after #)
         let line_trimmed = line.trim();
-        
+
         // Skip empty lines and pure comment lines
         if line_trimmed.is_empty() || line_trimmed.starts_with('#') {
             continue;
         }
-        
+
         // Remove inline comments
         let line_without_comment = if let Some(comment_pos) = line_trimmed.find('#') {
             // Check if # is inside a quoted string
@@ -119,13 +121,13 @@ fn normalize_compose_content(content: &str) -> String {
         } else {
             line_trimmed
         };
-        
+
         if !line_without_comment.is_empty() {
             normalized.push_str(line_without_comment);
             normalized.push('\n');
         }
     }
-    
+
     normalized
 }
 
@@ -145,9 +147,9 @@ services:
     ports:
       - "3000:3000"  # Port mapping
 "#;
-        
+
         let normalized = normalize_compose_content(input);
-        
+
         // Should not contain comments
         assert!(!normalized.contains('#'));
         // Should contain key content
@@ -160,11 +162,10 @@ services:
         // Same content should produce same hash
         let content1 = "version: '3.8'\nservices:\n  api:\n    image: nginx\n";
         let content2 = "version: '3.8'\nservices:\n  api:\n    image: nginx\n";
-        
+
         let normalized1 = normalize_compose_content(content1);
         let normalized2 = normalize_compose_content(content2);
-        
+
         assert_eq!(normalized1, normalized2);
     }
 }
-

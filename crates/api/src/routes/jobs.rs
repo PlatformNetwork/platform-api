@@ -6,16 +6,16 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use uuid::Uuid;
 use sqlx::Row;
+use uuid::Uuid;
 
+use crate::job_distributor::{DistributeJobRequest, JobDistributor};
+use crate::redis_client::RedisClient;
+use crate::state::AppState;
 use platform_api_models::{
-    ClaimJobRequest, ClaimJobResponse, SubmitResultRequest, 
-    JobListResponse, JobStats, JobMetadata
+    ClaimJobRequest, ClaimJobResponse, JobListResponse, JobMetadata, JobStats, SubmitResultRequest,
 };
 use platform_api_scheduler::CreateJobRequest;
-use crate::state::AppState;
-use crate::redis_client::RedisClient;
 use serde_json::Value as JsonValue;
 
 /// Create jobs router
@@ -31,8 +31,12 @@ pub fn create_router() -> Router<AppState> {
         .route("/jobs/:id/fail", post(fail_job))
         .route("/jobs/:id/progress", get(get_job_progress))
         .route("/jobs/:id/test-results", get(get_job_test_results))
+        .route("/jobs/:id/current-test", get(get_current_test))
+        .route("/jobs/:id/logs", get(stream_logs))
+        .route("/jobs/:id/resource-usage", get(get_resource_usage))
         .route("/jobs/next", get(get_next_job))
         .route("/jobs/stats", get(get_job_stats))
+        .route("/challenge/create-job", post(create_job_from_challenge))
 }
 
 /// Create a new job
@@ -40,11 +44,80 @@ pub async fn create_job(
     State(state): State<AppState>,
     Json(request): Json<CreateJobRequest>,
 ) -> Result<Json<JobMetadata>, StatusCode> {
-    let job = state.scheduler.create_job(request).await
-        .map_err(|e| {
-            tracing::error!("Failed to create job: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    // Clone the request data we need before moving it
+    let challenge_id = request.challenge_id.clone();
+    let payload = request.payload.clone();
+
+    // Create the job in the scheduler
+    let job = state.scheduler.create_job(request).await.map_err(|e| {
+        tracing::error!("Failed to create job: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Get challenge info to find compose_hash
+    let challenge_uuid = Uuid::parse_str(&challenge_id.to_string()).unwrap_or_else(|_| {
+        // If challenge_id is not a UUID, try to look it up by name
+        // For now, we'll just use a default UUID - this should be improved in production
+        tracing::warn!(
+            "challenge_id '{}' is not a valid UUID",
+            challenge_id.to_string()
+        );
+        Uuid::new_v4()
+    });
+
+    // Try to get compose_hash from challenge registry or use placeholder
+    let compose_hash = state
+        .challenge_registry
+        .read()
+        .await
+        .values()
+        .find(|spec| spec.id == challenge_uuid)
+        .map(|spec| spec.compose_hash.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Create job distributor
+    let distributor = JobDistributor::new(state.clone());
+
+    // Prepare distribution request
+    let distribute_request = DistributeJobRequest {
+        job_id: job.id.to_string(),
+        job_name: payload
+            .get("job_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("job")
+            .to_string(),
+        payload: payload.clone(),
+        compose_hash,
+        challenge_id: challenge_id.to_string(),
+        challenge_cvm_ws_url: None, // This would be set if we had the challenge CVM URL
+    };
+
+    // Distribute job to validators if we found a valid compose_hash
+    if distribute_request.compose_hash != "unknown" {
+        // Distribute job to validators
+        match distributor
+            .distribute_job_to_validators(distribute_request)
+            .await
+        {
+            Ok(response) => {
+                tracing::info!(
+                    "Distributed job {} to {} validators",
+                    job.id,
+                    response.assigned_validators.len()
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to distribute job {}: {}", job.id, e);
+                // Don't fail the request, job is still created
+            }
+        }
+    } else {
+        tracing::warn!(
+            "Could not find challenge {} to distribute job {}",
+            challenge_id,
+            job.id
+        );
+    }
 
     Ok(Json(job))
 }
@@ -54,12 +127,16 @@ pub async fn list_jobs(
     State(state): State<AppState>,
     Query(params): Query<ListJobsParams>,
 ) -> Result<Json<JobListResponse>, StatusCode> {
-    let jobs = state.scheduler.list_jobs(
-        params.page.unwrap_or(1),
-        params.per_page.unwrap_or(20),
-        params.status,
-        params.challenge_id,
-    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = state
+        .scheduler
+        .list_jobs(
+            params.page.unwrap_or(1),
+            params.per_page.unwrap_or(20),
+            params.status,
+            params.challenge_id,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(jobs))
 }
@@ -69,7 +146,10 @@ pub async fn get_job(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<JobMetadata>, StatusCode> {
-    let job = state.scheduler.get_job(id).await
+    let job = state
+        .scheduler
+        .get_job(id)
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     Ok(Json(job))
@@ -80,7 +160,10 @@ pub async fn claim_job(
     State(state): State<AppState>,
     Json(request): Json<ClaimJobRequest>,
 ) -> Result<Json<ClaimJobResponse>, StatusCode> {
-    let response = state.scheduler.claim_job(request).await
+    let response = state
+        .scheduler
+        .claim_job(request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
@@ -92,7 +175,10 @@ pub async fn claim_specific_job(
     Path(id): Path<Uuid>,
     Json(request): Json<ClaimJobRequest>,
 ) -> Result<Json<ClaimJobResponse>, StatusCode> {
-    let response = state.scheduler.claim_specific_job(id, request).await
+    let response = state
+        .scheduler
+        .claim_specific_job(id, request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(response))
@@ -104,7 +190,10 @@ pub async fn complete_job(
     Path(id): Path<Uuid>,
     Json(request): Json<SubmitResultRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    state.scheduler.complete_job(id, request).await
+    state
+        .scheduler
+        .complete_job(id, request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -120,7 +209,10 @@ pub async fn fail_job(
         reason: request.reason.clone(),
         error_details: request.error_details.clone(),
     };
-    state.scheduler.fail_job(id, fail_request).await
+    state
+        .scheduler
+        .fail_job(id, fail_request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -131,19 +223,21 @@ pub async fn get_next_job(
     State(state): State<AppState>,
     Query(params): Query<GetNextJobParams>,
 ) -> Result<Json<Option<ClaimJobResponse>>, StatusCode> {
-    let job = state.scheduler.get_next_job(
-        params.validator_hotkey,
-        params.runtime,
-    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let job = state
+        .scheduler
+        .get_next_job(params.validator_hotkey, params.runtime)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(job))
 }
 
 /// Get job statistics
-pub async fn get_job_stats(
-    State(state): State<AppState>,
-) -> Result<Json<JobStats>, StatusCode> {
-    let stats = state.scheduler.get_job_stats().await
+pub async fn get_job_stats(State(state): State<AppState>) -> Result<Json<JobStats>, StatusCode> {
+    let stats = state
+        .scheduler
+        .get_job_stats()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(stats))
@@ -152,14 +246,13 @@ pub async fn get_job_stats(
 /// Get pending jobs for validator
 pub async fn get_pending_jobs(
     State(state): State<AppState>,
-    Query(params): Query<PendingJobsParams>,
+    Query(_params): Query<PendingJobsParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let jobs = state.scheduler.list_jobs(
-        1,
-        100,
-        Some("pending".to_string()),
-        None,
-    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = state
+        .scheduler
+        .list_jobs(1, 100, Some("pending".to_string()), None)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({
         "jobs": jobs.jobs.iter().map(|j| serde_json::json!({
@@ -176,7 +269,10 @@ pub async fn submit_results(
     Path(id): Path<Uuid>,
     Json(request): Json<SubmitResultRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    state.scheduler.complete_job(id, request).await
+    state
+        .scheduler
+        .complete_job(id, request)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -217,19 +313,32 @@ pub async fn get_job_progress(
     Path(id): Path<Uuid>,
 ) -> Result<Json<JsonValue>, StatusCode> {
     let job_id = id.to_string();
-    
+
     if let Some(redis) = &state.redis_client {
-        match redis.get_job_progress(&job_id).await {
-            Ok(Some(progress)) => {
-                Ok(Json(serde_json::to_value(progress).unwrap_or(JsonValue::Null)))
-            }
-            Ok(None) => {
-                Err(StatusCode::NOT_FOUND)
-            }
-            Err(e) => {
+        // Get raw JSON from Redis for enhanced progress data
+        let mut conn = redis.client.get_async_connection().await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        let key = format!("job:{}:progress", job_id);
+        let json_str: Option<String> = redis::cmd("GET")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
                 tracing::error!("Failed to get job progress from Redis: {}", e);
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
-            }
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        if let Some(json) = json_str {
+            // Parse as generic JSON to preserve all fields
+            let progress: JsonValue = serde_json::from_str(&json)
+                .unwrap_or_else(|_| JsonValue::Null);
+            Ok(Json(progress))
+        } else {
+            Err(StatusCode::NOT_FOUND)
         }
     } else {
         Err(StatusCode::SERVICE_UNAVAILABLE)
@@ -244,7 +353,7 @@ pub async fn get_job_test_results(
 ) -> Result<Json<JsonValue>, StatusCode> {
     if let Some(pool) = &state.database_pool {
         let limit = params.limit.unwrap_or(1000);
-        
+
         let rows = sqlx::query(
             r#"
             SELECT id, job_id, challenge_id, task_id, test_name, status,
@@ -254,7 +363,7 @@ pub async fn get_job_test_results(
             WHERE job_id = $1
             ORDER BY created_at ASC
             LIMIT $2
-            "#
+            "#,
         )
         .bind(id)
         .bind(limit as i64)
@@ -264,25 +373,28 @@ pub async fn get_job_test_results(
             tracing::error!("Failed to query test results: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        
-        let results: Vec<JsonValue> = rows.into_iter().map(|row| {
-            serde_json::json!({
-                "id": row.get::<Uuid, _>("id"),
-                "job_id": row.get::<Uuid, _>("job_id"),
-                "challenge_id": row.get::<Uuid, _>("challenge_id"),
-                "task_id": row.get::<String, _>("task_id"),
-                "test_name": row.get::<Option<String>, _>("test_name"),
-                "status": row.get::<String, _>("status"),
-                "is_resolved": row.get::<bool, _>("is_resolved"),
-                "error_message": row.get::<Option<String>, _>("error_message"),
-                "execution_time_ms": row.get::<Option<i64>, _>("execution_time_ms"),
-                "output_text": row.get::<Option<String>, _>("output_text"),
-                "logs": row.get::<JsonValue, _>("logs"),
-                "metrics": row.get::<JsonValue, _>("metrics"),
-                "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+
+        let results: Vec<JsonValue> = rows
+            .into_iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.get::<Uuid, _>("id"),
+                    "job_id": row.get::<Uuid, _>("job_id"),
+                    "challenge_id": row.get::<Uuid, _>("challenge_id"),
+                    "task_id": row.get::<String, _>("task_id"),
+                    "test_name": row.get::<Option<String>, _>("test_name"),
+                    "status": row.get::<String, _>("status"),
+                    "is_resolved": row.get::<bool, _>("is_resolved"),
+                    "error_message": row.get::<Option<String>, _>("error_message"),
+                    "execution_time_ms": row.get::<Option<i64>, _>("execution_time_ms"),
+                    "output_text": row.get::<Option<String>, _>("output_text"),
+                    "logs": row.get::<JsonValue, _>("logs"),
+                    "metrics": row.get::<JsonValue, _>("metrics"),
+                    "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+                })
             })
-        }).collect();
-        
+            .collect();
+
         Ok(Json(serde_json::json!({
             "job_id": id,
             "test_results": results,
@@ -299,4 +411,349 @@ pub struct TestResultsParams {
     pub limit: Option<u32>,
 }
 
+/// Request from challenge to create a job
+#[derive(Debug, Deserialize)]
+pub struct ChallengeCreateJobRequest {
+    pub job_name: String,
+    pub payload: JsonValue,
+    pub challenge_id: String,
+    pub priority: Option<String>,
+    pub timeout: Option<u64>,
+    pub max_retries: Option<u32>,
+}
 
+/// Create a job from challenge SDK
+pub async fn create_job_from_challenge(
+    State(state): State<AppState>,
+    Json(request): Json<ChallengeCreateJobRequest>,
+) -> Result<Json<JobMetadata>, StatusCode> {
+    // Parse priority
+    let priority = request.priority.as_ref().map(|p| match p.as_str() {
+        "low" => platform_api_models::JobPriority::Low,
+        "high" => platform_api_models::JobPriority::High,
+        "critical" => platform_api_models::JobPriority::Critical,
+        _ => platform_api_models::JobPriority::Normal,
+    });
+
+    // Create scheduler request
+    let create_request = CreateJobRequest {
+        challenge_id: platform_api_models::Id::from(
+            Uuid::parse_str(&request.challenge_id).unwrap_or_else(|_| Uuid::new_v4()),
+        ),
+        payload: request.payload.clone(),
+        priority,
+        runtime: platform_api_models::RuntimeType::Docker,
+        timeout: request.timeout,
+        max_retries: request.max_retries,
+    };
+
+    // Create the job in the scheduler
+    let job = state
+        .scheduler
+        .create_job(create_request)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create job from challenge: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Try to get challenge info and distribute job
+    let challenge_id = request.challenge_id.clone();
+    if let Ok(challenge_uuid) = Uuid::parse_str(&challenge_id) {
+        // Try to get compose_hash from challenge registry
+        let compose_hash = state
+            .challenge_registry
+            .read()
+            .await
+            .values()
+            .find(|spec| spec.id == challenge_uuid)
+            .map(|spec| spec.compose_hash.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        if compose_hash != "unknown" {
+            // Create job distributor
+            let distributor = JobDistributor::new(state.clone());
+
+            // Prepare distribution request
+            let distribute_request = DistributeJobRequest {
+                job_id: job.id.to_string(),
+                job_name: request.job_name.clone(),
+                payload: request.payload.clone(),
+                compose_hash,
+                challenge_id: challenge_id.clone(),
+                challenge_cvm_ws_url: None, // Could be enhanced to include the challenge's WebSocket URL
+            };
+
+            // Distribute job to validators
+            match distributor
+                .distribute_job_to_validators(distribute_request)
+                .await
+            {
+                Ok(response) => {
+                    tracing::info!(
+                        "Challenge {} created and distributed job {} to {} validators",
+                        challenge_id,
+                        job.id,
+                        response.assigned_validators.len()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to distribute job {} from challenge {}: {}",
+                        job.id,
+                        challenge_id,
+                        e
+                    );
+                    // Don't fail the request, job is still created
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Could not find challenge {} to distribute job {}",
+                challenge_id,
+                job.id
+            );
+        }
+    } else {
+        tracing::warn!("Invalid challenge_id format: {}", challenge_id);
+    }
+
+    Ok(Json(job))
+}
+
+/// Get currently executing test details
+pub async fn get_current_test(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JsonValue>, StatusCode> {
+    let job_id = id.to_string();
+
+    if let Some(redis) = &state.redis_client {
+        // Get raw JSON from Redis
+        let mut conn = redis.client.get_async_connection().await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        let key = format!("job:{}:progress", job_id);
+        let json_str: Option<String> = redis::cmd("GET")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get job progress from Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        if let Some(json) = json_str {
+            // Parse as generic JSON
+            let progress: JsonValue = serde_json::from_str(&json)
+                .unwrap_or_else(|_| JsonValue::Null);
+            
+            // Extract current_test from the progress data
+            if let Some(current_test) = progress.get("current_test") {
+                Ok(Json(current_test.clone()))
+            } else {
+                // No current test running
+                Ok(Json(serde_json::json!({
+                    "job_id": job_id,
+                    "status": "no_active_test",
+                    "message": "No test is currently running"
+                })))
+            }
+        } else {
+            Err(StatusCode::NOT_FOUND)
+        }
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+/// Stream test logs in real-time
+pub async fn stream_logs(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<LogStreamParams>,
+) -> Result<Json<JsonValue>, StatusCode> {
+    let job_id = id.to_string();
+
+    if let Some(redis) = &state.redis_client {
+        let mut logs = Vec::new();
+        
+        // Get connection
+        let mut conn = redis.client.get_async_connection().await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        // Try to read from Redis Streams first
+        let stream_key = format!("job:logs:{}", job_id);
+        let stream_result: Result<Vec<(String, std::collections::HashMap<String, String>)>, redis::RedisError> = 
+            redis::cmd("XRANGE")
+                .arg(&stream_key)
+                .arg("-")
+                .arg("+")
+                .arg("COUNT")
+                .arg(params.limit.unwrap_or(1000))
+                .query_async(&mut conn)
+                .await;
+        
+        match stream_result {
+            Ok(stream_entries) => {
+                // Convert stream entries to log format
+                for (_id, fields) in stream_entries {
+                    let log_entry = serde_json::json!({
+                        "job_id": fields.get("job_id").cloned(),
+                        "file": fields.get("file").cloned(),
+                        "line": fields.get("line").cloned(),
+                        "line_number": fields.get("line_number").and_then(|v| v.parse::<i32>().ok()),
+                        "timestamp": fields.get("timestamp").and_then(|v| v.parse::<f64>().ok()),
+                    });
+                    logs.push(log_entry);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Failed to read from Redis Streams, falling back to progress data: {}", e);
+                
+                // Fallback to reading from progress data
+                let key = format!("job:{}:progress", job_id);
+                let json_str: Option<String> = redis::cmd("GET")
+                    .arg(&key)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to get job progress from Redis: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+                
+                if let Some(json) = json_str {
+                    let progress: JsonValue = serde_json::from_str(&json)
+                        .unwrap_or_else(|_| JsonValue::Null);
+                    
+                    // Get live_logs if available
+                    if let Some(live_logs) = progress.get("live_logs").and_then(|v| v.as_array()) {
+                        logs.extend(live_logs.iter().cloned());
+                    }
+                    
+                    // Get current test logs if available
+                    if let Some(current_test) = progress.get("current_test") {
+                        if let Some(test_logs) = current_test.get("logs").and_then(|v| v.as_array()) {
+                            logs.extend(test_logs.iter().cloned());
+                        }
+                    }
+                } else {
+                    return Err(StatusCode::NOT_FOUND);
+                }
+            }
+        }
+        
+        // Apply filters
+        let filtered_logs: Vec<JsonValue> = logs
+            .into_iter()
+            .filter(|log| {
+                if let Some(file_filter) = &params.file {
+                    if let Some(file) = log.get("file").and_then(|v| v.as_str()) {
+                        if !file.contains(file_filter) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
+            .skip(params.offset.unwrap_or(0))
+            .take(params.limit.unwrap_or(1000))
+            .collect();
+        
+        Ok(Json(serde_json::json!({
+            "job_id": job_id,
+            "logs": filtered_logs,
+            "total": filtered_logs.len(),
+            "has_more": filtered_logs.len() == params.limit.unwrap_or(1000)
+        })))
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+/// Get resource usage data
+pub async fn get_resource_usage(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JsonValue>, StatusCode> {
+    let job_id = id.to_string();
+
+    if let Some(redis) = &state.redis_client {
+        // Get raw JSON from Redis
+        let mut conn = redis.client.get_async_connection().await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        let key = format!("job:{}:progress", job_id);
+        let json_str: Option<String> = redis::cmd("GET")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get job progress from Redis: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        
+        if let Some(json) = json_str {
+            let progress: JsonValue = serde_json::from_str(&json)
+                .unwrap_or_else(|_| JsonValue::Null);
+            
+            let mut resource_data = serde_json::json!({
+                "job_id": job_id,
+                "current_test_resources": null,
+                "test_history": []
+            });
+            
+            // Get current test resource usage
+            if let Some(current_test) = progress.get("current_test") {
+                if let Some(resource_usage) = current_test.get("resource_usage") {
+                    resource_data["current_test_resources"] = resource_usage.clone();
+                }
+            }
+            
+            // Get historical resource usage from test results
+            if let Some(results) = progress.get("results").and_then(|r| r.get("results")).and_then(|r| r.as_array()) {
+                let history: Vec<JsonValue> = results
+                    .iter()
+                    .filter_map(|result| {
+                        if let (Some(task_id), Some(metrics)) = (
+                            result.get("task_id"),
+                            result.get("metrics")
+                        ) {
+                            Some(serde_json::json!({
+                                "task_id": task_id,
+                                "metrics": metrics
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                resource_data["test_history"] = serde_json::Value::Array(history);
+            }
+            
+            Ok(Json(resource_data))
+        } else {
+            Err(StatusCode::NOT_FOUND)
+        }
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+/// Query parameters for log streaming
+#[derive(Debug, Deserialize)]
+pub struct LogStreamParams {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub file: Option<String>,
+}

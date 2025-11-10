@@ -51,7 +51,7 @@ impl ORMGatewayConfig {
             read_only: false,
         }
     }
-    
+
     /// Create a read-only configuration (for validator routes)
     pub fn read_only() -> Self {
         Self::default()
@@ -72,7 +72,7 @@ impl SecureORMGateway {
         let permissions = ORMPermissions::new();
         let query_validator = QueryValidator::new(config.clone());
         let query_executor = QueryExecutor::new(db_pool.clone(), config.query_timeout);
-        
+
         Self {
             config,
             db_pool,
@@ -81,7 +81,7 @@ impl SecureORMGateway {
             query_executor,
         }
     }
-    
+
     /// Execute a query (read or write depending on config)
     pub async fn execute_query(&self, query: ORMQuery) -> Result<QueryResult> {
         // Check if write operations are allowed
@@ -95,31 +95,31 @@ impl SecureORMGateway {
                 }
             }
         }
-        
+
         // Validate query
         self.query_validator.validate(&query)?;
-        
+
         // Check permissions
         self.permissions.check_query_permissions(&query)?;
-        
+
         // Execute query
         let result = self.query_executor.execute(&query).await?;
-        
+
         info!(
             operation = &query.operation,
             table = &query.table,
             row_count = result.rows.len(),
             "Query executed successfully"
         );
-        
+
         Ok(result)
     }
-    
+
     /// Execute a read-only query (alias for compatibility)
     pub async fn execute_read_query(&self, query: ORMQuery) -> Result<QueryResult> {
         self.execute_query(query).await
     }
-    
+
     /// Load permissions from a challenge
     pub async fn load_challenge_permissions(
         &mut self,
@@ -131,16 +131,17 @@ impl SecureORMGateway {
             table_count = permissions.len(),
             "Loading challenge permissions"
         );
-        
-        self.permissions.load_permissions(challenge_id, permissions)?;
+
+        self.permissions
+            .load_permissions(challenge_id, permissions)?;
         Ok(())
     }
-    
+
     /// Get available tables for a challenge
     pub async fn get_available_tables(&self, challenge_id: &str) -> Vec<String> {
         self.permissions.get_available_tables(challenge_id)
     }
-    
+
     /// Get table schema information
     pub async fn get_table_schema(
         &self,
@@ -151,7 +152,7 @@ impl SecureORMGateway {
         if !self.permissions.can_access_table(challenge_id, table_name) {
             return Err(anyhow::anyhow!("Access denied to table: {}", table_name));
         }
-        
+
         // Get schema from database
         let columns = sqlx::query(
             r#"
@@ -163,13 +164,13 @@ impl SecureORMGateway {
             FROM information_schema.columns
             WHERE table_schema = $1 AND table_name = $2
             ORDER BY ordinal_position
-            "#
+            "#,
         )
         .bind(format!("challenge_{}", challenge_id.replace('-', "_")))
         .bind(table_name)
         .fetch_all(&self.db_pool)
         .await?;
-        
+
         let column_info: Vec<ColumnInfo> = columns
             .into_iter()
             .map(|col| {
@@ -181,7 +182,7 @@ impl SecureORMGateway {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        
+
         Ok(TableSchema {
             table_name: table_name.to_string(),
             columns: column_info,

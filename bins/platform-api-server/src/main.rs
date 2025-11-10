@@ -1,16 +1,13 @@
 use anyhow::Result;
 use clap::Parser;
-use platform_api::{create_router, AppState, AppConfig};
-use std::net::SocketAddr;
+use platform_api::{create_router, AppConfig, AppState};
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
-use tower_http::{
-    cors::CorsLayer,
-    trace::TraceLayer,
-};
-use tracing::{info, error};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod tls;
@@ -62,7 +59,7 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config = load_config(&args.config)?;
-    
+
     // Create application state
     let state = AppState::new(config.clone()).await?;
 
@@ -75,14 +72,14 @@ async fn main() -> Result<()> {
         let runner_config = ChallengeRunnerConfig::default();
         // Pass ORM gateway, validator_challenge_status, and redis_client to ChallengeRunner
         let runner = Arc::new(ChallengeRunner::new(
-            runner_config, 
-            (**pool).clone(), 
+            runner_config,
+            (**pool).clone(),
             state.orm_gateway.clone(),
             Some(state.validator_challenge_status.clone()),
             state.redis_client.clone(),
         ));
         info!("ChallengeRunner initialized for auto-starting challenges with ORM bridge");
-        
+
         // Clone state and set runner
         let mut new_state = state.clone();
         new_state.challenge_runner = Some(runner);
@@ -94,16 +91,21 @@ async fn main() -> Result<()> {
     // Start background task to sync challenges from PostgreSQL
     let state_arc = Arc::new(state);
     platform_api::background::start_challenge_sync_task(state_arc.clone());
-    
+
     // Start background task to sync metagraph hotkeys from Bittensor chain
     platform_api::background::start_metagraph_sync_task();
 
     // Create router
     let app = create_router((*state_arc).clone());
 
-    // Start server
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    
+    // Start server - use config port from environment variable or args
+    let port = if std::env::var("SERVER_PORT").is_ok() {
+        config.server_port
+    } else {
+        args.port
+    };
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
     // Check if TLS is enabled
     if let (Some(cert_path), Some(key_path)) = (args.tls_cert, args.tls_key) {
         info!("Starting HTTPS server on {}", addr);
@@ -120,7 +122,7 @@ async fn main() -> Result<()> {
 fn load_config(_path: &str) -> Result<AppConfig> {
     // For now, return a default configuration
     // In a real implementation, this would load from the specified file
-    
+
     // Check if we're in dev mode
     let dev_mode = env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
     let env_mode = env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| {
@@ -130,7 +132,7 @@ fn load_config(_path: &str) -> Result<AppConfig> {
             "prod".to_string()
         }
     });
-    
+
     // Generate random secrets in dev mode (not hardcoded)
     // In production, fail fast if secrets are missing
     let generate_random_key = || {
@@ -139,7 +141,7 @@ fn load_config(_path: &str) -> Result<AppConfig> {
         rand::thread_rng().fill_bytes(&mut key);
         hex::encode(key)
     };
-    
+
     let storage_key = env::var("STORAGE_ENCRYPTION_KEY")
         .unwrap_or_else(|_| {
             if dev_mode || env_mode == "dev" {
@@ -152,7 +154,7 @@ fn load_config(_path: &str) -> Result<AppConfig> {
                 panic!("Security error: STORAGE_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
             }
         });
-    
+
     let kbs_key = env::var("KBS_ENCRYPTION_KEY")
         .unwrap_or_else(|_| {
             if dev_mode || env_mode == "dev" {
@@ -165,33 +167,25 @@ fn load_config(_path: &str) -> Result<AppConfig> {
                 panic!("Security error: KBS_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
             }
         });
-    
+
     Ok(AppConfig {
-        server_port: 3000,
-        server_host: "0.0.0.0".to_string(),
-        jwt_secret_ui: env::var("JWT_SECRET_UI")
-            .unwrap_or_else(|_| "disabled-no-jwt".to_string()),
+        server_port: env::var("SERVER_PORT")
+            .unwrap_or_else(|_| "3000".to_string())
+            .parse()
+            .expect("Invalid SERVER_PORT"),
+        server_host: env::var("SERVER_HOST")
+            .unwrap_or_else(|_| "0.0.0.0".to_string()),
+        jwt_secret_ui: env::var("JWT_SECRET_UI").unwrap_or_else(|_| "disabled-no-jwt".to_string()),
         database_url: env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgresql://localhost/platform".to_string()),
         storage_config: platform_api_storage::StorageConfig {
-            backend_type: env::var("STORAGE_BACKEND")
-                .unwrap_or_else(|_| "postgres".to_string()),
+            backend_type: env::var("STORAGE_BACKEND").unwrap_or_else(|_| "postgres".to_string()),
             s3_bucket: Some("platform-storage".to_string()),
             s3_region: Some("us-east-1".to_string()),
             minio_endpoint: None,
             encryption_key: storage_key,
         },
-        attestation_config: platform_api_attestation::AttestationConfig {
-            dcap_enabled: true,
-            sev_enabled: true,
-            tdx_enabled: true,
-            policy_store_path: "/tmp/policies".to_string(),
-            verification_timeout: 30,
-            jwt_secret: env::var("JWT_SECRET")
-                .unwrap_or_else(|_| "disabled-no-jwt".to_string()),
-            session_timeout: 3600,
-            verifier_url: Some("http://localhost:8080".to_string()),
-        },
+        attestation_config: platform_api_attestation::TdxConfig::from_env(),
         kbs_config: platform_api_kbs::KbsConfig {
             key_derivation_algorithm: "HKDF".to_string(),
             key_size: 256,
@@ -221,5 +215,3 @@ fn load_config(_path: &str) -> Result<AppConfig> {
         },
     })
 }
-
-

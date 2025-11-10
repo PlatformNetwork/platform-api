@@ -5,11 +5,11 @@ use axum::{
 };
 use uuid::Uuid;
 
-use platform_api_models::{
-    AttestationRequest, AttestationResponse, KeyReleaseRequest, 
-    KeyReleaseResponse, AttestationSession, PlatformResult
-};
 use crate::state::AppState;
+use platform_api_models::{
+    AttestationRequest, AttestationResponse, AttestationSession, KeyReleaseRequest,
+    KeyReleaseResponse, PlatformResult,
+};
 
 /// Perform attestation handler
 pub async fn attest_handler(
@@ -96,5 +96,3 @@ pub struct KeyInfo {
     pub usage_count: u32,
     pub max_usage: Option<u32>,
 }
-
-

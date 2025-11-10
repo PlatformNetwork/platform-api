@@ -1,8 +1,8 @@
 use anyhow::Result;
 use platform_api_models::*;
-use uuid::Uuid;
 use std::collections::HashMap;
 use tracing::info;
+use uuid::Uuid;
 
 /// Autoscaler service for managing VM pools
 pub struct AutoscalerService {
@@ -39,11 +39,11 @@ impl AutoscalerService {
     /// Scale up a pool by creating VMs
     pub async fn scale_up(&self, pool_id: Uuid, target_count: u32) -> Result<ScalePoolResponse> {
         info!("Scaling up pool {} to {} VMs", pool_id, target_count);
-        
+
         let mut vms = self.vms.write().await;
         let previous_count = vms.len() as u32;
         let mut created_vms = Vec::new();
-        
+
         // Create VMs via dstack VMM API
         for i in 0..target_count {
             let vm_id = format!("vm-{}-{}", pool_id, i);
@@ -54,15 +54,15 @@ impl AutoscalerService {
                 status: VmStatus::Creating,
                 created_at: chrono::Utc::now(),
             };
-            
+
             // Create VM instance (integration with dstack VMM would be added here)
             // Currently tracking VM instances for testing
             vms.insert(vm_id.clone(), vm_instance.clone());
             created_vms.push(vm_id.clone());
-            
+
             info!("Created VM instance: {}", vm_id);
         }
-        
+
         Ok(ScalePoolResponse {
             pool_id,
             previous_nodes: previous_count,
@@ -76,17 +76,18 @@ impl AutoscalerService {
     /// Scale down a pool by stopping VMs
     pub async fn scale_down(&self, pool_id: Uuid, target_count: u32) -> Result<ScalePoolResponse> {
         info!("Scaling down pool {} to {} VMs", pool_id, target_count);
-        
+
         let mut vms = self.vms.write().await;
         let previous_count = vms.len() as u32;
         let mut removed_vms = Vec::new();
-        
+
         // Get VMs for this pool
-        let pool_vms: Vec<String> = vms.values()
+        let pool_vms: Vec<String> = vms
+            .values()
             .filter(|vm| vm.pool_id == pool_id)
             .map(|vm| vm.vm_id.clone())
             .collect();
-        
+
         // Remove excess VMs
         let to_remove = pool_vms.len().saturating_sub(target_count as usize);
         for (i, vm_id) in pool_vms.iter().enumerate() {
@@ -97,7 +98,7 @@ impl AutoscalerService {
                 info!("Removed VM instance: {}", vm_id);
             }
         }
-        
+
         Ok(ScalePoolResponse {
             pool_id,
             previous_nodes: previous_count,
@@ -111,7 +112,8 @@ impl AutoscalerService {
     /// List VMs for a pool
     pub async fn list_vms(&self, pool_id: Uuid) -> Result<Vec<VmInstance>> {
         let vms = self.vms.read().await;
-        Ok(vms.values()
+        Ok(vms
+            .values()
             .filter(|vm| vm.pool_id == pool_id)
             .cloned()
             .collect())
@@ -146,4 +148,3 @@ impl Default for AutoscalerConfig {
         }
     }
 }
-

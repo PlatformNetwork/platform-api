@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::{Digest, Hotkey, Id};
 use chrono::{DateTime, Utc};
-use super::{Id, Hotkey, Digest};
+use serde::{Deserialize, Serialize};
 
 /// Challenge visibility level
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -174,8 +174,12 @@ pub struct ChallengeEmissionsSchedule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChallengeDistributionCurve {
     Linear,
-    Exponential { decay_factor: f64 },
-    Step { intervals: Vec<(DateTime<Utc>, f64)> },
+    Exponential {
+        decay_factor: f64,
+    },
+    Step {
+        intervals: Vec<(DateTime<Utc>, f64)>,
+    },
 }
 
 use std::collections::BTreeMap;
@@ -194,7 +198,7 @@ pub struct ChallengeSpec {
     pub ports: Vec<ChallengePort>,
     pub env: BTreeMap<String, String>,
     pub emission_share: f64, // 0.0 to 1.0, share of emission for this challenge
-    pub mechanism_id: u8, // Mechanism ID this challenge belongs to (REQUIRED, 0-255)
+    pub mechanism_id: u8,    // Mechanism ID this challenge belongs to (REQUIRED, 0-255)
     pub weight: Option<f64>, // Weight for emission calculation (optional, auto-calculated if None)
     pub description: Option<String>, // Challenge description
     pub mermaid_chart: Option<String>, // Mermaid format chart
@@ -208,7 +212,7 @@ pub struct ChallengeSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChallengeResources {
     pub vcpu: u32,
-    pub memory: String, // e.g., "4G"
+    pub memory: String,       // e.g., "4G"
     pub disk: Option<String>, // e.g., "50G"
 }
 
@@ -270,5 +274,3 @@ pub struct ChallengeEmission {
     pub owner_hotkey: String,
     pub created_at: DateTime<Utc>,
 }
-
-

@@ -47,10 +47,7 @@ pub struct CapacityMatcher;
 
 impl CapacityMatcher {
     /// Find best node for job requirements using binpacking
-    pub fn find_best_node(
-        nodes: &[Node],
-        requirements: &JobRequirements,
-    ) -> Option<NodeScore> {
+    pub fn find_best_node(nodes: &[Node], requirements: &JobRequirements) -> Option<NodeScore> {
         let mut candidates: Vec<NodeScore> = nodes
             .iter()
             .filter_map(|node| {
@@ -65,8 +62,12 @@ impl CapacityMatcher {
             .collect();
 
         // Sort by score descending
-        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        
+        candidates.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         candidates.into_iter().next()
     }
 
@@ -76,66 +77,74 @@ impl CapacityMatcher {
         if requirements.requires_tdx && !node.capacity.has_tdx {
             return None;
         }
-        
+
         if requirements.requires_gpu && node.capacity.gpu_count < requirements.gpu_count {
             return None;
         }
-        
+
         if let Some(ref region) = requirements.region {
             if node.capacity.region != *region {
                 return None;
             }
         }
-        
+
         // Check capacity availability
         if node.capacity.available_cpu < requirements.cpu {
             return None;
         }
-        
+
         if node.capacity.available_memory_gb < requirements.memory_gb {
             return None;
         }
-        
+
         if node.capacity.available_disk_gb < requirements.disk_gb {
             return None;
         }
-        
+
         // Check health
         if !matches!(node.health.status, HealthStatus::Healthy) {
             return None;
         }
-        
+
         // Calculate fitness score
         let cpu_score = node.capacity.available_cpu as f64 / node.capacity.total_cpu as f64;
-        let memory_score = node.capacity.available_memory_gb as f64 / node.capacity.total_memory_gb as f64;
-        let disk_score = node.capacity.available_disk_gb as f64 / node.capacity.total_disk_gb as f64;
-        
+        let memory_score =
+            node.capacity.available_memory_gb as f64 / node.capacity.total_memory_gb as f64;
+        let disk_score =
+            node.capacity.available_disk_gb as f64 / node.capacity.total_disk_gb as f64;
+
         // Weighted average (CPU most important)
         let score = (cpu_score * 0.5 + memory_score * 0.3 + disk_score * 0.2);
-        
+
         Some(score)
     }
 
     /// Get reasons why a node matches
     fn get_match_reasons(node: &Node, requirements: &JobRequirements) -> Vec<String> {
         let mut reasons = Vec::new();
-        
+
         if node.capacity.has_tdx {
             reasons.push("TDX enabled".to_string());
         }
-        
+
         if node.capacity.gpu_count > 0 {
             reasons.push(format!("GPU available ({})", node.capacity.gpu_count));
         }
-        
+
         if node.capacity.available_cpu >= requirements.cpu {
-            reasons.push(format!("CPU capacity: {} available", node.capacity.available_cpu));
+            reasons.push(format!(
+                "CPU capacity: {} available",
+                node.capacity.available_cpu
+            ));
         }
-        
+
         if node.capacity.available_memory_gb >= requirements.memory_gb {
-            reasons.push(format!("Memory capacity: {}GB available", node.capacity.available_memory_gb));
+            reasons.push(format!(
+                "Memory capacity: {}GB available",
+                node.capacity.available_memory_gb
+            ));
         }
-        
+
         reasons
     }
 
@@ -149,11 +158,11 @@ impl CapacityMatcher {
         if requirements.requires_tdx && !capacity.has_tdx {
             return false;
         }
-        
+
         if requirements.requires_gpu && capacity.gpu_count < requirements.gpu_count {
             return false;
         }
-        
+
         // Check available capacity
         capacity.available_cpu >= requirements.cpu
             && capacity.available_memory_gb >= requirements.memory_gb
@@ -190,9 +199,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        
+
         node.health.status = HealthStatus::Healthy;
-        
+
         let requirements = JobRequirements {
             cpu: 2,
             memory_gb: 4,
@@ -202,10 +211,9 @@ mod tests {
             gpu_count: 0,
             region: None,
         };
-        
+
         let score = CapacityMatcher::score_node(&node, &requirements);
         assert!(score.is_some());
         assert!(score.unwrap() > 0.0);
     }
 }
-

@@ -5,23 +5,26 @@ use axum::{
 };
 use uuid::Uuid;
 
-use platform_api_models::{
-    ClaimJobRequest, ClaimJobResponse, SubmitResultRequest, 
-    JobListResponse, JobStats, JobMetadata, PlatformResult
-};
 use crate::state::AppState;
+use platform_api_models::{
+    ClaimJobRequest, ClaimJobResponse, JobListResponse, JobMetadata, JobStats, PlatformResult,
+    SubmitResultRequest,
+};
 
 /// List jobs handler
 pub async fn list_jobs_handler(
     state: State<AppState>,
     params: Query<ListJobsParams>,
 ) -> PlatformResult<Json<JobListResponse>> {
-    let jobs = state.scheduler.list_jobs(
-        params.page.unwrap_or(1),
-        params.per_page.unwrap_or(20),
-        params.status.clone(),
-        params.challenge_id,
-    ).await?;
+    let jobs = state
+        .scheduler
+        .list_jobs(
+            params.page.unwrap_or(1),
+            params.per_page.unwrap_or(20),
+            params.status.clone(),
+            params.challenge_id,
+        )
+        .await?;
 
     Ok(Json(jobs))
 }
@@ -83,18 +86,16 @@ pub async fn get_next_job_handler(
     state: State<AppState>,
     params: Query<GetNextJobParams>,
 ) -> PlatformResult<Json<Option<ClaimJobResponse>>> {
-    let job = state.scheduler.get_next_job(
-        params.validator_hotkey.clone(),
-        params.runtime.clone(),
-    ).await?;
+    let job = state
+        .scheduler
+        .get_next_job(params.validator_hotkey.clone(), params.runtime.clone())
+        .await?;
 
     Ok(Json(job))
 }
 
 /// Get job stats handler
-pub async fn get_job_stats_handler(
-    state: State<AppState>,
-) -> PlatformResult<Json<JobStats>> {
+pub async fn get_job_stats_handler(state: State<AppState>) -> PlatformResult<Json<JobStats>> {
     let stats = state.scheduler.get_job_stats().await?;
     Ok(Json(stats))
 }
@@ -121,5 +122,3 @@ pub struct FailJobRequest {
     pub reason: String,
     pub error_details: Option<String>,
 }
-
-

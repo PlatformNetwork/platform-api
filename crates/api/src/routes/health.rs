@@ -1,10 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::get,
-    Router,
-};
+use axum::{extract::State, http::StatusCode, response::Json, routing::get, Router};
 use serde_json::Value;
 
 use crate::state::AppState;
@@ -36,7 +30,7 @@ pub async fn health_check(State(state): State<AppState>) -> Json<Value> {
 /// Readiness check endpoint
 pub async fn readiness_check(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
     let readiness = check_readiness(&state).await;
-    
+
     if readiness.is_ready {
         Ok(Json(serde_json::to_value(readiness).unwrap()))
     } else {
@@ -57,7 +51,10 @@ pub async fn liveness_check() -> Json<Value> {
 
 /// Metrics endpoint
 pub async fn metrics(State(state): State<AppState>) -> Result<String, StatusCode> {
-    state.metrics.get_metrics().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    state
+        .metrics
+        .get_metrics()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Version info endpoint - Returns Docker commit SHA and public key for verification
@@ -65,17 +62,16 @@ pub async fn version_info(State(state): State<AppState>) -> Json<Value> {
     // Get public key from security module
     let public_key = state.security.get_public_key();
     let public_key_hex = hex::encode(&public_key);
-    
+
     // Get compose_hash from TDX attestation
     let compose_hash = state.security.get_compose_hash();
-    
+
     // Package version from Cargo
     let cargo_version = env!("CARGO_PKG_VERSION");
-    
+
     // Get git commit if available
-    let git_commit = option_env!("GIT_COMMIT")
-        .unwrap_or("unknown");
-    
+    let git_commit = option_env!("GIT_COMMIT").unwrap_or("unknown");
+
     Json(serde_json::json!({
         "platform_api": {
             "cargo_version": cargo_version,
@@ -131,53 +127,72 @@ struct LivenessStatus {
 fn get_uptime() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
-    
+
     static START_TIME: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
     START_TIME.get_or_init(|| chrono::Utc::now());
-    
+
     let start = START_TIME.get().unwrap();
-    chrono::Utc::now().signed_duration_since(*start).num_seconds() as u64
+    chrono::Utc::now()
+        .signed_duration_since(*start)
+        .num_seconds() as u64
 }
 
 /// Get service status for all services
-async fn get_service_status(state: &AppState) -> std::collections::BTreeMap<String, ServiceStatus> {
+async fn get_service_status(
+    _state: &AppState,
+) -> std::collections::BTreeMap<String, ServiceStatus> {
     let mut services = std::collections::BTreeMap::new();
-    
+
     // Check storage service
-    services.insert("storage".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        last_check: chrono::Utc::now(),
-        error: None,
-    });
-    
+    services.insert(
+        "storage".to_string(),
+        ServiceStatus {
+            status: "healthy".to_string(),
+            last_check: chrono::Utc::now(),
+            error: None,
+        },
+    );
+
     // Check attestation service
-    services.insert("attestation".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        last_check: chrono::Utc::now(),
-        error: None,
-    });
-    
+    services.insert(
+        "attestation".to_string(),
+        ServiceStatus {
+            status: "healthy".to_string(),
+            last_check: chrono::Utc::now(),
+            error: None,
+        },
+    );
+
     // Check KBS service
-    services.insert("kbs".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        last_check: chrono::Utc::now(),
-        error: None,
-    });
-    
+    services.insert(
+        "kbs".to_string(),
+        ServiceStatus {
+            status: "healthy".to_string(),
+            last_check: chrono::Utc::now(),
+            error: None,
+        },
+    );
+
     // Check scheduler service
-    services.insert("scheduler".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        last_check: chrono::Utc::now(),
-        error: None,
-    });
-    
+    services.insert(
+        "scheduler".to_string(),
+        ServiceStatus {
+            status: "healthy".to_string(),
+            last_check: chrono::Utc::now(),
+            error: None,
+        },
+    );
+
     // Check builder service
-    services.insert("builder".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        last_check: chrono::Utc::now(),
-        error: None,
-    });
-    
+    services.insert(
+        "builder".to_string(),
+        ServiceStatus {
+            status: "healthy".to_string(),
+            last_check: chrono::Utc::now(),
+            error: None,
+        },
+    );
+
     services
 }
 
@@ -186,14 +201,17 @@ async fn check_readiness(state: &AppState) -> ReadinessStatus {
     let services = get_service_status(state).await;
     let mut errors = Vec::new();
     let mut is_ready = true;
-    
+
     for (name, service) in &services {
         if service.status != "healthy" {
             is_ready = false;
-            errors.push(format!("Service {} is not healthy: {:?}", name, service.error));
+            errors.push(format!(
+                "Service {} is not healthy: {:?}",
+                name, service.error
+            ));
         }
     }
-    
+
     ReadinessStatus {
         is_ready,
         timestamp: chrono::Utc::now(),
@@ -201,5 +219,3 @@ async fn check_readiness(state: &AppState) -> ReadinessStatus {
         errors,
     }
 }
-
-

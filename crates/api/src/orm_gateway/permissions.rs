@@ -26,7 +26,7 @@ impl ORMPermissions {
             permissions: HashMap::new(),
         }
     }
-    
+
     /// Load permissions for a challenge
     pub fn load_permissions(
         &mut self,
@@ -38,15 +38,18 @@ impl ORMPermissions {
             table_count = permissions.len(),
             "Loading permissions"
         );
-        
-        self.permissions.insert(challenge_id.to_string(), permissions);
+
+        self.permissions
+            .insert(challenge_id.to_string(), permissions);
         Ok(())
     }
-    
+
     /// Check if a query is allowed
     pub fn check_query_permissions(&self, query: &ORMQuery) -> Result<()> {
         // Get challenge ID from schema name (format: challenge_<id> or <challenge_name>_v<version>)
-        let challenge_id = query.schema.as_ref()
+        let challenge_id = query
+            .schema
+            .as_ref()
             .and_then(|s| {
                 // Try challenge_<id> format first (UUID format)
                 if let Some(id) = s.strip_prefix("challenge_") {
@@ -64,15 +67,14 @@ impl ORMPermissions {
                     }
                 } else {
                     // Extract challenge name from <name>_v<version> format
-                    s.rsplit_once("_v")
-                        .map(|(name, _)| name.to_string())
+                    s.rsplit_once("_v").map(|(name, _)| name.to_string())
                 }
             })
             .ok_or_else(|| anyhow::anyhow!("Invalid schema name"))?;
-        
+
         // Get challenge permissions
         let challenge_perms = self.permissions.get(&challenge_id);
-        
+
         // If no permissions are defined for this challenge, allow all (development mode)
         // This makes permissions optional - they provide additional security when defined
         if challenge_perms.is_none() {
@@ -84,13 +86,14 @@ impl ORMPermissions {
             );
             return Ok(()); // Allow all tables and columns
         }
-        
+
         let challenge_perms = challenge_perms.unwrap();
-        
+
         // Get table permissions
-        let table_perms = challenge_perms.get(&query.table)
+        let table_perms = challenge_perms
+            .get(&query.table)
             .ok_or_else(|| anyhow::anyhow!("Access denied to table: {}", query.table))?;
-        
+
         // Check column permissions
         if let Some(columns) = &query.columns {
             for column in columns {
@@ -99,38 +102,50 @@ impl ORMPermissions {
                 }
             }
         }
-        
+
         // Check filter column permissions
         if let Some(filters) = &query.filters {
             for filter in filters {
                 if !table_perms.readable_columns.contains(&filter.column) {
-                    return Err(anyhow::anyhow!("Access denied to filter column: {}", filter.column));
+                    return Err(anyhow::anyhow!(
+                        "Access denied to filter column: {}",
+                        filter.column
+                    ));
                 }
             }
         }
-        
+
         // Check order by column permissions
         if let Some(order_by) = &query.order_by {
             for order in order_by {
                 if !table_perms.readable_columns.contains(&order.column) {
-                    return Err(anyhow::anyhow!("Access denied to order column: {}", order.column));
+                    return Err(anyhow::anyhow!(
+                        "Access denied to order column: {}",
+                        order.column
+                    ));
                 }
             }
         }
-        
+
         // Check aggregation permissions
         if let Some(aggregations) = &query.aggregations {
             if !table_perms.allow_aggregations {
-                return Err(anyhow::anyhow!("Aggregations not allowed for table: {}", query.table));
+                return Err(anyhow::anyhow!(
+                    "Aggregations not allowed for table: {}",
+                    query.table
+                ));
             }
-            
+
             for agg in aggregations {
                 if !table_perms.readable_columns.contains(&agg.column) {
-                    return Err(anyhow::anyhow!("Access denied to aggregate column: {}", agg.column));
+                    return Err(anyhow::anyhow!(
+                        "Access denied to aggregate column: {}",
+                        agg.column
+                    ));
                 }
             }
         }
-        
+
         // Check row limit
         if let Some(max_rows) = table_perms.max_rows {
             if let Some(limit) = query.limit {
@@ -149,10 +164,10 @@ impl ORMPermissions {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Check if a challenge can access a table
     pub fn can_access_table(&self, challenge_id: &str, table_name: &str) -> bool {
         self.permissions
@@ -160,7 +175,7 @@ impl ORMPermissions {
             .and_then(|perms| perms.get(table_name))
             .is_some()
     }
-    
+
     /// Get available tables for a challenge
     pub fn get_available_tables(&self, challenge_id: &str) -> Vec<String> {
         self.permissions
@@ -168,7 +183,7 @@ impl ORMPermissions {
             .map(|perms| perms.keys().cloned().collect())
             .unwrap_or_default()
     }
-    
+
     /// Get readable columns for a table
     pub fn get_readable_columns(
         &self,
@@ -186,7 +201,7 @@ impl ORMPermissions {
 impl ORMPermissions {
     pub fn default_challenge_permissions() -> HashMap<String, TablePermission> {
         let mut permissions = HashMap::new();
-        
+
         // Challenge submissions table
         permissions.insert(
             "challenge_submissions".to_string(),
@@ -207,7 +222,7 @@ impl ORMPermissions {
                 max_rows: Some(10000),
             },
         );
-        
+
         // Miner performance table
         permissions.insert(
             "miner_performance".to_string(),
@@ -228,7 +243,7 @@ impl ORMPermissions {
                 max_rows: Some(5000),
             },
         );
-        
+
         // Weight recommendations table
         permissions.insert(
             "weight_recommendations".to_string(),
@@ -247,7 +262,7 @@ impl ORMPermissions {
                 max_rows: Some(1000),
             },
         );
-        
+
         permissions
     }
 }
@@ -255,13 +270,15 @@ impl ORMPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_permissions_check() {
         let mut permissions = ORMPermissions::new();
         let default_perms = ORMPermissions::default_challenge_permissions();
-        permissions.load_permissions("test-challenge", default_perms).unwrap();
-        
+        permissions
+            .load_permissions("test-challenge", default_perms)
+            .unwrap();
+
         // Test valid query
         let query = ORMQuery {
             operation: "select".to_string(),
@@ -276,9 +293,9 @@ mod tests {
             values: None,
             set_values: None,
         };
-        
+
         assert!(permissions.check_query_permissions(&query).is_ok());
-        
+
         // Test invalid column
         let mut invalid_query = query.clone();
         invalid_query.columns = Some(vec!["id".to_string(), "secret_column".to_string()]);

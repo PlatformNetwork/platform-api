@@ -68,4 +68,3 @@ impl JobCache {
         self.updated_at = Utc::now();
     }
 }
-

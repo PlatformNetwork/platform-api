@@ -1,12 +1,12 @@
-use platform_api_models::*;
-use uuid::Uuid;
-use sqlx::{PgPool, FromRow};
-use chrono::{DateTime, Utc};
-use serde_json::Value as JsonValue;
-use std::sync::Arc;
-use std::collections::BTreeMap;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use platform_api_models::*;
+use serde_json::Value as JsonValue;
+use sqlx::{FromRow, PgPool};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 mod capacity;
 pub use capacity::*;
@@ -18,7 +18,7 @@ pub use scoring::*;
 #[derive(Debug, FromRow)]
 struct JobRow {
     id: Uuid,
-    challenge_id: Uuid,  // Changed from String to Uuid to match database schema
+    challenge_id: Uuid, // Changed from String to Uuid to match database schema
     validator_hotkey: Option<String>,
     status: String,
     priority: String,
@@ -83,7 +83,6 @@ pub struct CreateJobRequest {
     pub max_retries: Option<u32>,
 }
 
-
 /// Scheduler service
 pub struct SchedulerService {
     config: SchedulerConfig,
@@ -114,21 +113,24 @@ impl SchedulerService {
     pub async fn create_job(&self, request: CreateJobRequest) -> Result<JobMetadata> {
         let job_id = Uuid::new_v4();
         let now = Utc::now();
-        
+
         // Convert challenge_id to Uuid if it's a string
         let challenge_uuid = match request.challenge_id.to_string().parse::<Uuid>() {
             Ok(uuid) => uuid,
             Err(_) => {
                 // If challenge_id is not a UUID, try to use it as-is or generate a default
                 // For now, we'll use a default UUID - in production this should be resolved properly
-                warn!("challenge_id '{}' is not a valid UUID, using default", request.challenge_id.to_string());
+                warn!(
+                    "challenge_id '{}' is not a valid UUID, using default",
+                    request.challenge_id.to_string()
+                );
                 Uuid::new_v4()
             }
         };
-        
+
         // Store challenge_uuid for database insertion
         let challenge_uuid_for_db = challenge_uuid;
-        
+
         let job = JobMetadata {
             id: Id::from(job_id),
             challenge_id: Id::from(challenge_uuid),
@@ -140,7 +142,9 @@ impl SchedulerService {
             claimed_at: None,
             started_at: None,
             completed_at: None,
-            timeout_at: request.timeout.map(|secs| now + chrono::Duration::seconds(secs as i64)),
+            timeout_at: request
+                .timeout
+                .map(|secs| now + chrono::Duration::seconds(secs as i64)),
             retry_count: 0,
             max_retries: request.max_retries.unwrap_or(3),
         };
@@ -155,7 +159,7 @@ impl SchedulerService {
                 JobStatus::Failed => "failed",
                 JobStatus::Timeout => "timeout",
             };
-            
+
             let priority_str = match job.priority {
                 JobPriority::Low => "low",
                 JobPriority::Normal => "normal",
@@ -175,7 +179,7 @@ impl SchedulerService {
                 "#,
             )
             .bind(job_id)
-            .bind(challenge_uuid_for_db)  // sqlx automatically converts uuid::Uuid to PostgreSQL UUID type
+            .bind(challenge_uuid_for_db) // sqlx automatically converts uuid::Uuid to PostgreSQL UUID type
             .bind(status_str)
             .bind(priority_str)
             .bind(job.runtime.to_string())
@@ -198,11 +202,17 @@ impl SchedulerService {
         Ok(job)
     }
 
-    pub async fn list_jobs(&self, page: u32, per_page: u32, status: Option<String>, challenge_id: Option<Uuid>) -> Result<JobListResponse> {
+    pub async fn list_jobs(
+        &self,
+        page: u32,
+        per_page: u32,
+        status: Option<String>,
+        challenge_id: Option<Uuid>,
+    ) -> Result<JobListResponse> {
         if let Some(pool) = &self.database_pool {
             // Query from PostgreSQL
             let offset = (page - 1) * per_page;
-            
+
             // Build query with optional filters using query_as
             let rows = if let Some(challenge_id_filter) = challenge_id {
                 if let Some(status_filter) = &status {
@@ -282,7 +292,7 @@ impl SchedulerService {
             let total: i64 = if let Some(challenge_id_filter) = challenge_id {
                 if let Some(status_filter) = &status {
                     sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM jobs WHERE status = $1 AND challenge_id = $2"
+                        "SELECT COUNT(*) FROM jobs WHERE status = $1 AND challenge_id = $2",
                     )
                     .bind(status_filter)
                     .bind(challenge_id_filter)
@@ -291,7 +301,7 @@ impl SchedulerService {
                     .unwrap_or(0)
                 } else {
                     sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM jobs WHERE challenge_id = $1"
+                        "SELECT COUNT(*) FROM jobs WHERE challenge_id = $1",
                     )
                     .bind(challenge_id_filter)
                     .fetch_one(pool.as_ref())
@@ -299,20 +309,16 @@ impl SchedulerService {
                     .unwrap_or(0)
                 }
             } else if let Some(status_filter) = &status {
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM jobs WHERE status = $1"
-                )
-                .bind(status_filter)
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0)
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = $1")
+                    .bind(status_filter)
+                    .fetch_one(pool.as_ref())
+                    .await
+                    .unwrap_or(0)
             } else {
-                sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM jobs"
-                )
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0)
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs")
+                    .fetch_one(pool.as_ref())
+                    .await
+                    .unwrap_or(0)
             };
 
             Ok(JobListResponse {
@@ -325,7 +331,7 @@ impl SchedulerService {
             // Fallback to in-memory
             let jobs_map = self.jobs.read().await;
             let mut jobs: Vec<JobMetadata> = jobs_map.values().cloned().collect();
-            
+
             // Filter by status
             if let Some(status_filter) = &status {
                 let status_enum = match status_filter.as_str() {
@@ -335,16 +341,23 @@ impl SchedulerService {
                     "completed" => JobStatus::Completed,
                     "failed" => JobStatus::Failed,
                     "timeout" => JobStatus::Timeout,
-                    _ => return Ok(JobListResponse { jobs: vec![], total: 0, page, per_page }),
+                    _ => {
+                        return Ok(JobListResponse {
+                            jobs: vec![],
+                            total: 0,
+                            page,
+                            per_page,
+                        })
+                    }
                 };
                 jobs.retain(|j| j.status == status_enum);
             }
-            
+
             // Filter by challenge_id
             if let Some(challenge_id_filter) = challenge_id {
                 jobs.retain(|j| j.challenge_id.to_string() == challenge_id_filter.to_string());
             }
-            
+
             let total = jobs.len() as u64;
             let offset = ((page - 1) * per_page) as usize;
             let end = (offset + per_page as usize).min(jobs.len());
@@ -377,7 +390,9 @@ impl SchedulerService {
                 .ok_or_else(|| anyhow::anyhow!("Job not found: {}", id))
         } else {
             let jobs = self.jobs.read().await;
-            jobs.get(&id).cloned().ok_or_else(|| anyhow::anyhow!("Job not found: {}", id))
+            jobs.get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Job not found: {}", id))
         }
     }
 
@@ -385,7 +400,7 @@ impl SchedulerService {
         if let Some(pool) = &self.database_pool {
             // Find and claim a pending job
             let now = Utc::now();
-            
+
             // Try to claim a pending job (atomic update)
             let row = sqlx::query_as::<_, JobRow>(
                 r#"
@@ -412,7 +427,7 @@ impl SchedulerService {
 
             if let Some(r) = row {
                 let job: JobMetadata = r.into();
-                
+
                 // Payload is already stored in the job (we can load it later if needed)
 
                 info!(job_id = %job.id, validator_hotkey = %request.validator_hotkey, "Claimed job");
@@ -447,14 +462,15 @@ impl SchedulerService {
         } else {
             // Fallback to in-memory
             let mut jobs = self.jobs.write().await;
-            let job = jobs.values_mut()
+            let job = jobs
+                .values_mut()
                 .find(|j| j.status == JobStatus::Pending)
                 .ok_or_else(|| anyhow::anyhow!("No pending jobs available"))?;
-            
+
             job.status = JobStatus::Claimed;
             job.validator_hotkey = Some(request.validator_hotkey.clone());
             job.claimed_at = Some(Utc::now());
-            
+
             Ok(ClaimJobResponse {
                 job: job.clone(),
                 harness: HarnessBundle {
@@ -481,11 +497,15 @@ impl SchedulerService {
         }
     }
 
-    pub async fn claim_specific_job(&self, job_id: Uuid, request: ClaimJobRequest) -> Result<ClaimJobResponse> {
+    pub async fn claim_specific_job(
+        &self,
+        job_id: Uuid,
+        request: ClaimJobRequest,
+    ) -> Result<ClaimJobResponse> {
         if let Some(pool) = &self.database_pool {
             // Atomically claim the specific job
             let now = Utc::now();
-            
+
             let row = sqlx::query_as::<_, JobRow>(
                 r#"
                 UPDATE jobs 
@@ -535,9 +555,10 @@ impl SchedulerService {
         } else {
             // Fallback to in-memory
             let mut jobs = self.jobs.write().await;
-            let job = jobs.get_mut(&job_id)
+            let job = jobs
+                .get_mut(&job_id)
                 .ok_or_else(|| anyhow::anyhow!("Job not found"))?;
-            
+
             if job.status != JobStatus::Pending {
                 return Err(anyhow::anyhow!("Job not available or already claimed"));
             }
@@ -575,42 +596,46 @@ impl SchedulerService {
     pub async fn complete_job(&self, job_id: Uuid, result: SubmitResultRequest) -> Result<()> {
         if let Some(pool) = &self.database_pool {
             let now = Utc::now();
-            
+
             // Extract progress metrics from result
             let result_json = serde_json::to_value(&result.result)?;
-            let progress_percent = result_json.get("progress")
+            let progress_percent = result_json
+                .get("progress")
                 .and_then(|p| p.get("progress_percent"))
                 .and_then(|v| v.as_f64())
                 .map(|v| (v * 100.0) as f64);
-            let total_tasks = result_json.get("progress")
+            let total_tasks = result_json
+                .get("progress")
                 .and_then(|p| p.get("total_tasks"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            let completed_tasks = result_json.get("progress")
+            let completed_tasks = result_json
+                .get("progress")
                 .and_then(|p| p.get("completed_tasks"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            let resolved_tasks = result_json.get("progress")
+            let resolved_tasks = result_json
+                .get("progress")
                 .and_then(|p| p.get("resolved_tasks"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            let unresolved_tasks = result_json.get("progress")
+            let unresolved_tasks = result_json
+                .get("progress")
                 .and_then(|p| p.get("unresolved_tasks"))
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            
+
             // Get challenge_id from job
-            let job_row = sqlx::query_as::<_, JobRow>(
-                "SELECT challenge_id FROM jobs WHERE id = $1"
-            )
-            .bind(job_id)
-            .fetch_optional(pool.as_ref())
-            .await?;
-            
-            let challenge_id = job_row.map(|r| r.challenge_id).ok_or_else(|| {
-                anyhow::anyhow!("Job {} not found", job_id)
-            })?;
-            
+            let job_row =
+                sqlx::query_as::<_, JobRow>("SELECT challenge_id FROM jobs WHERE id = $1")
+                    .bind(job_id)
+                    .fetch_optional(pool.as_ref())
+                    .await?;
+
+            let challenge_id = job_row
+                .map(|r| r.challenge_id)
+                .ok_or_else(|| anyhow::anyhow!("Job {} not found", job_id))?;
+
             // Update job with progress metrics
             sqlx::query(
                 r#"
@@ -639,7 +664,8 @@ impl SchedulerService {
             .await?;
 
             // Extract and store individual test results
-            if let Some(results_array) = result_json.get("results")
+            if let Some(results_array) = result_json
+                .get("results")
                 .and_then(|r| r.get("results"))
                 .and_then(|r| r.as_array())
             {
@@ -683,25 +709,28 @@ impl SchedulerService {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Extract test result data from Terminal-Bench result JSON
     fn extract_test_result(test_result: &serde_json::Value) -> Result<TestResultData> {
-        let task_id = test_result.get("task_id")
+        let task_id = test_result
+            .get("task_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing task_id"))?
             .to_string();
-        
-        let test_name = test_result.get("test_name")
+
+        let test_name = test_result
+            .get("test_name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        
-        let is_resolved = test_result.get("is_resolved")
+
+        let is_resolved = test_result
+            .get("is_resolved")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        
+
         let status = if is_resolved {
             "passed".to_string()
         } else if test_result.get("error").is_some() {
@@ -709,29 +738,34 @@ impl SchedulerService {
         } else {
             "failed".to_string()
         };
-        
-        let error_message = test_result.get("error")
+
+        let error_message = test_result
+            .get("error")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        
-        let execution_time_ms = test_result.get("execution_time_ms")
+
+        let execution_time_ms = test_result
+            .get("execution_time_ms")
             .or_else(|| test_result.get("execution_time"))
             .and_then(|v| v.as_i64())
             .map(|v| v as i64);
-        
-        let output_text = test_result.get("output")
+
+        let output_text = test_result
+            .get("output")
             .or_else(|| test_result.get("output_text"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        
-        let logs = test_result.get("logs")
+
+        let logs = test_result
+            .get("logs")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        
-        let metrics = test_result.get("metrics")
+
+        let metrics = test_result
+            .get("metrics")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        
+
         Ok(TestResultData {
             task_id,
             test_name,
@@ -748,7 +782,7 @@ impl SchedulerService {
     pub async fn fail_job(&self, job_id: Uuid, request: FailJobRequest) -> Result<()> {
         if let Some(pool) = &self.database_pool {
             let now = Utc::now();
-            
+
             sqlx::query(
                 r#"
                 UPDATE jobs 
@@ -772,15 +806,21 @@ impl SchedulerService {
                 job.completed_at = Some(Utc::now());
             }
         }
-        
+
         Ok(())
     }
 
-    pub async fn get_next_job(&self, validator_hotkey: String, runtime: Option<String>) -> Result<Option<ClaimJobResponse>> {
+    pub async fn get_next_job(
+        &self,
+        validator_hotkey: String,
+        runtime: Option<String>,
+    ) -> Result<Option<ClaimJobResponse>> {
         // Use claim_job to get next available job
         let request = ClaimJobRequest {
             validator_hotkey: Hotkey::from(validator_hotkey),
-            runtime: runtime.map(|r| RuntimeType::from(r.as_str())).unwrap_or(RuntimeType::Docker),
+            runtime: runtime
+                .map(|r| RuntimeType::from(r.as_str()))
+                .unwrap_or(RuntimeType::Docker),
             capabilities: vec![],
         };
 
@@ -797,26 +837,32 @@ impl SchedulerService {
                 .fetch_one(pool.as_ref())
                 .await
                 .unwrap_or(0);
-            
-            let pending: i64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = 'pending'")
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0);
-            
-            let running: i64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status IN ('claimed', 'running')")
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0);
-            
-            let completed: i64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = 'completed'")
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0);
-            
-            let failed: i64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
-                .fetch_one(pool.as_ref())
-                .await
-                .unwrap_or(0);
+
+            let pending: i64 =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = 'pending'")
+                    .fetch_one(pool.as_ref())
+                    .await
+                    .unwrap_or(0);
+
+            let running: i64 = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('claimed', 'running')",
+            )
+            .fetch_one(pool.as_ref())
+            .await
+            .unwrap_or(0);
+
+            let completed: i64 = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM jobs WHERE status = 'completed'",
+            )
+            .fetch_one(pool.as_ref())
+            .await
+            .unwrap_or(0);
+
+            let failed: i64 =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
+                    .fetch_one(pool.as_ref())
+                    .await
+                    .unwrap_or(0);
 
             // Calculate success rate
             let success_rate = if total > 0 {
@@ -831,7 +877,7 @@ impl SchedulerService {
                 SELECT AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
                 FROM jobs
                 WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
-                "#
+                "#,
             )
             .fetch_one(pool.as_ref())
             .await
@@ -853,10 +899,22 @@ impl SchedulerService {
             // Fallback to in-memory
             let jobs = self.jobs.read().await;
             let total = jobs.len() as u64;
-            let pending = jobs.values().filter(|j| j.status == JobStatus::Pending).count() as u64;
-            let running = jobs.values().filter(|j| matches!(j.status, JobStatus::Claimed | JobStatus::Running)).count() as u64;
-            let completed = jobs.values().filter(|j| j.status == JobStatus::Completed).count() as u64;
-            let failed = jobs.values().filter(|j| j.status == JobStatus::Failed).count() as u64;
+            let pending = jobs
+                .values()
+                .filter(|j| j.status == JobStatus::Pending)
+                .count() as u64;
+            let running = jobs
+                .values()
+                .filter(|j| matches!(j.status, JobStatus::Claimed | JobStatus::Running))
+                .count() as u64;
+            let completed = jobs
+                .values()
+                .filter(|j| j.status == JobStatus::Completed)
+                .count() as u64;
+            let failed = jobs
+                .values()
+                .filter(|j| j.status == JobStatus::Failed)
+                .count() as u64;
 
             Ok(JobStats {
                 total_jobs: total,
@@ -865,7 +923,11 @@ impl SchedulerService {
                 completed_jobs: completed,
                 failed_jobs: failed,
                 avg_execution_time: 0.0,
-                success_rate: if total > 0 { completed as f64 / total as f64 } else { 0.0 },
+                success_rate: if total > 0 {
+                    completed as f64 / total as f64
+                } else {
+                    0.0
+                },
             })
         }
     }
@@ -905,4 +967,3 @@ struct TestResultData {
     logs: JsonValue,
     metrics: JsonValue,
 }
-

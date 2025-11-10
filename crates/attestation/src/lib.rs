@@ -1,17 +1,22 @@
-use anyhow::{Result, Context};
-use std::sync::Arc;
-use std::collections::HashMap;
-use uuid::Uuid;
-use chrono::{DateTime, Utc, Duration};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
+use platform_api_models::{
+    AttestationPolicy, AttestationRequest, AttestationResponse, AttestationSession,
+};
 use serde::Serialize;
-use jsonwebtoken::{encode, Header, EncodingKey, DecodingKey, Algorithm};
-use platform_api_models::{AttestationRequest, AttestationResponse, AttestationSession, AttestationPolicy};
+use std::collections::HashMap;
+use std::sync::Arc;
+use uuid::Uuid;
 
 mod verifier;
 pub use verifier::*;
 
 mod config;
 pub use config::*;
+
+// Use TdxConfig as AttestationConfig for now
+pub type AttestationConfig = TdxConfig;
 
 /// Attestation service for TDX VM verification
 pub struct AttestationService {
@@ -36,7 +41,7 @@ impl AttestationService {
         // Note: JWT functionality will be disabled if secret is "disabled-no-jwt"
         const DEFAULT_SECRET: &str = "change-me-in-production";
         const DISABLED_SECRET: &str = "disabled-no-jwt";
-        
+
         // Allow disabled JWT or skip default secret check if JWT is intentionally disabled
         let jwt_secret = if config.jwt_secret == DISABLED_SECRET || config.jwt_secret.is_empty() {
             DISABLED_SECRET.to_string()
@@ -48,12 +53,12 @@ impl AttestationService {
         } else {
             config.jwt_secret.clone()
         };
-        
+
         let signing_key = EncodingKey::from_secret(jwt_secret.as_bytes());
         let decoding_key = DecodingKey::from_secret(jwt_secret.as_bytes());
-        
+
         let verifier = TdxVerifier::new(config.clone());
-        
+
         Ok(Self {
             config: config.clone(),
             verifier,
@@ -64,20 +69,30 @@ impl AttestationService {
         })
     }
 
-    pub async fn verify_attestation(&self, request: AttestationRequest) -> Result<AttestationResponse> {
+    pub async fn verify_attestation(
+        &self,
+        request: AttestationRequest,
+    ) -> Result<AttestationResponse> {
         self.verify_attestation_with_event_log(request, None).await
     }
-    
-    pub async fn verify_attestation_with_event_log(&self, request: AttestationRequest, event_log: Option<&str>) -> Result<AttestationResponse> {
+
+    pub async fn verify_attestation_with_event_log(
+        &self,
+        request: AttestationRequest,
+        event_log: Option<&str>,
+    ) -> Result<AttestationResponse> {
         // Check if TEE verification is enforced
-        let tee_enforced = std::env::var("TEE_ENFORCED").unwrap_or_else(|_| "true".to_string()) == "true";
+        let tee_enforced =
+            std::env::var("TEE_ENFORCED").unwrap_or_else(|_| "true".to_string()) == "true";
         let dev_mode = std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
-        
+
         // Always verify attestation - no bypass allowed
         // In dev mode, use mock verification but still validate structure
         let verification_result = if !tee_enforced || dev_mode {
-            tracing::info!("DEV MODE: Using mock TDX verification (structure validation still enforced)");
-            
+            tracing::info!(
+                "DEV MODE: Using mock TDX verification (structure validation still enforced)"
+            );
+
             // Validate request structure even in dev mode
             if request.quote.is_none() {
                 return Ok(AttestationResponse {
@@ -89,7 +104,7 @@ impl AttestationService {
                     error: Some("Missing quote in attestation request".to_string()),
                 });
             }
-            
+
             // Check nonce binding if present
             if !request.nonce.is_empty() {
                 if request.nonce.len() < 16 {
@@ -103,7 +118,7 @@ impl AttestationService {
                     });
                 }
             }
-            
+
             // Create a mock verification result (structure validated)
             VerificationResult {
                 is_valid: true,
@@ -115,7 +130,7 @@ impl AttestationService {
             }
         } else {
             tracing::info!("Verifying attestation request with TDX verifier");
-            
+
             // Verify the attestation with the real verifier (fail fast if invalid)
             match TdxVerifier::verify_static(&self.verifier, &request, event_log).await {
                 Ok(result) => {
@@ -135,7 +150,7 @@ impl AttestationService {
                 }
             }
         };
-        
+
         if !verification_result.is_valid {
             return Ok(AttestationResponse {
                 session_token: String::new(),
@@ -143,7 +158,11 @@ impl AttestationService {
                 expires_at: Utc::now(),
                 verified_measurements: vec![],
                 policy: String::new(),
-                error: Some(verification_result.error.unwrap_or_else(|| "Verification failed".to_string())),
+                error: Some(
+                    verification_result
+                        .error
+                        .unwrap_or_else(|| "Verification failed".to_string()),
+                ),
             });
         }
 
@@ -156,16 +175,18 @@ impl AttestationService {
         // Derive validator_hotkey from verified TEE identity (app_id and instance_id)
         // Fail fast if app_id or instance_id is missing
         let validator_hotkey = {
-            let app_id = verification_result.app_id.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Security error: app_id missing from verification result"))?;
-            let instance_id = verification_result.instance_id.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Security error: instance_id missing from verification result"))?;
-            
+            let app_id = verification_result.app_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Security error: app_id missing from verification result")
+            })?;
+            let instance_id = verification_result.instance_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Security error: instance_id missing from verification result")
+            })?;
+
             let app_id_str = hex::encode(app_id);
             let instance_id_str = hex::encode(instance_id);
             format!("validator-{}-{}", app_id_str, instance_id_str)
         };
-        
+
         let session = AttestationSession {
             id: session_id,
             session_token: session_token.clone(),
@@ -194,7 +215,8 @@ impl AttestationService {
 
     pub async fn get_session(&self, id: Uuid) -> Result<AttestationSession> {
         let sessions = self.sessions.read().await;
-        sessions.get(&id)
+        sessions
+            .get(&id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Session not found"))
     }
@@ -208,47 +230,55 @@ impl AttestationService {
     }
 
     pub fn verify_token(&self, token: &str) -> Result<serde_json::Value> {
-        use jsonwebtoken::{decode, Validation, Algorithm};
-        
+        use jsonwebtoken::{decode, Algorithm, Validation};
+
         // Check if JWT is disabled
         if self.config.jwt_secret == "disabled-no-jwt" || self.config.jwt_secret.is_empty() {
             return Err(anyhow::anyhow!("JWT authentication is disabled"));
         }
-        
+
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_audience(&["platform-executor"]);
-        
+
         let claims = decode::<serde_json::Value>(token, &self.decoding_key, &validation)
             .context("Failed to decode JWT token")?;
-        
+
         // Verify expiration
-        let exp = claims.claims.get("exp")
+        let exp = claims
+            .claims
+            .get("exp")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| anyhow::anyhow!("Missing exp claim"))?;
-        
+
         let now = chrono::Utc::now().timestamp() as u64;
         if exp < now {
             return Err(anyhow::anyhow!("Token expired"));
         }
-        
+
         // Verify required claims
         if claims.claims.get("app_id").is_none() {
             return Err(anyhow::anyhow!("Missing app_id claim"));
         }
-        
+
         if claims.claims.get("instance_id").is_none() {
             return Err(anyhow::anyhow!("Missing instance_id claim"));
         }
-        
+
         Ok(claims.claims)
     }
 
-    fn generate_grant_token(&self, session_id: &Uuid, verification: &VerificationResult) -> Result<String> {
+    fn generate_grant_token(
+        &self,
+        session_id: &Uuid,
+        verification: &VerificationResult,
+    ) -> Result<String> {
         // Check if JWT is disabled
         if self.config.jwt_secret == "disabled-no-jwt" || self.config.jwt_secret.is_empty() {
-            return Err(anyhow::anyhow!("JWT authentication is disabled - cannot generate token"));
+            return Err(anyhow::anyhow!(
+                "JWT authentication is disabled - cannot generate token"
+            ));
         }
-        
+
         let claims = GrantClaims {
             sub: session_id.to_string(),
             jti: session_id.to_string(),
@@ -288,4 +318,3 @@ pub struct VerificationResult {
     pub device_id: Option<Vec<u8>>,
     pub error: Option<String>,
 }
-

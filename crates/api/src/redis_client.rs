@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 /// Redis client for job progress logging
 #[derive(Clone)]
 pub struct RedisClient {
-    client: Client,
+    pub client: Client,
 }
 
 /// Job progress data structure
@@ -37,17 +37,17 @@ pub struct JobLogEntry {
 impl RedisClient {
     /// Create a new Redis client
     pub fn new(redis_url: &str) -> Result<Self> {
-        let client = Client::open(redis_url)
-            .context("Failed to create Redis client")?;
-        
+        let client = Client::open(redis_url).context("Failed to create Redis client")?;
+
         info!("Redis client initialized");
-        
+
         Ok(Self { client })
     }
 
     /// Get a connection manager for async operations
     async fn get_connection(&self) -> Result<ConnectionManager> {
-        let manager = self.client
+        let manager = self
+            .client
             .get_tokio_connection_manager()
             .await
             .context("Failed to get Redis connection manager")?;
@@ -58,15 +58,15 @@ impl RedisClient {
     pub async fn set_job_progress(&self, progress: &JobProgress) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let key = format!("job:{}:progress", progress.job_id);
-        
-        let json = serde_json::to_string(progress)
-            .context("Failed to serialize job progress")?;
-        
+
+        let json = serde_json::to_string(progress).context("Failed to serialize job progress")?;
+
         // Set with TTL of 24 hours (86400 seconds)
         let ttl: u64 = 86400;
-        conn.set_ex(&key, json, ttl).await
+        conn.set_ex(&key, json, ttl)
+            .await
             .context("Failed to set job progress in Redis")?;
-        
+
         Ok(())
     }
 
@@ -74,19 +74,20 @@ impl RedisClient {
     pub async fn append_job_log(&self, job_id: &str, log_entry: &JobLogEntry) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let key = format!("job:{}:logs", job_id);
-        
-        let json = serde_json::to_string(log_entry)
-            .context("Failed to serialize job log entry")?;
-        
+
+        let json = serde_json::to_string(log_entry).context("Failed to serialize job log entry")?;
+
         // Append to list
-        conn.rpush::<_, _, ()>(&key, json).await
+        conn.rpush::<_, _, ()>(&key, json)
+            .await
             .context("Failed to append job log to Redis")?;
-        
+
         // Set TTL on the list (24 hours)
         let ttl: i64 = 86400;
-        conn.expire::<_, ()>(&key, ttl).await
+        conn.expire::<_, ()>(&key, ttl)
+            .await
             .context("Failed to set TTL on job logs key")?;
-        
+
         Ok(())
     }
 
@@ -94,13 +95,15 @@ impl RedisClient {
     pub async fn get_job_progress(&self, job_id: &str) -> Result<Option<JobProgress>> {
         let mut conn = self.get_connection().await?;
         let key = format!("job:{}:progress", job_id);
-        
-        let json: Option<String> = conn.get(&key).await
+
+        let json: Option<String> = conn
+            .get(&key)
+            .await
             .context("Failed to get job progress from Redis")?;
-        
+
         if let Some(json_str) = json {
-            let progress: JobProgress = serde_json::from_str(&json_str)
-                .context("Failed to deserialize job progress")?;
+            let progress: JobProgress =
+                serde_json::from_str(&json_str).context("Failed to deserialize job progress")?;
             Ok(Some(progress))
         } else {
             Ok(None)
@@ -108,17 +111,23 @@ impl RedisClient {
     }
 
     /// Get job logs from Redis
-    pub async fn get_job_logs(&self, job_id: &str, limit: Option<usize>) -> Result<Vec<JobLogEntry>> {
+    pub async fn get_job_logs(
+        &self,
+        job_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<JobLogEntry>> {
         let mut conn = self.get_connection().await?;
         let key = format!("job:{}:logs", job_id);
-        
+
         let limit = limit.unwrap_or(1000); // Default to 1000 entries
-        
+
         // Get range of logs (from beginning, up to limit)
         let end_index = (limit.saturating_sub(1)) as isize;
-        let json_strings: Vec<String> = conn.lrange(&key, 0, end_index).await
+        let json_strings: Vec<String> = conn
+            .lrange(&key, 0, end_index)
+            .await
             .context("Failed to get job logs from Redis")?;
-        
+
         let mut logs = Vec::new();
         for json_str in json_strings {
             match serde_json::from_str::<JobLogEntry>(&json_str) {
@@ -129,7 +138,7 @@ impl RedisClient {
                 }
             }
         }
-        
+
         Ok(logs)
     }
 
@@ -138,13 +147,15 @@ impl RedisClient {
         let mut conn = self.get_connection().await?;
         let progress_key = format!("job:{}:progress", job_id);
         let logs_key = format!("job:{}:logs", job_id);
-        
+
         // Delete both keys
-        conn.del::<_, i32>(&progress_key).await
+        conn.del::<_, i32>(&progress_key)
+            .await
             .context("Failed to delete job progress key")?;
-        conn.del::<_, i32>(&logs_key).await
+        conn.del::<_, i32>(&logs_key)
+            .await
             .context("Failed to delete job logs key")?;
-        
+
         Ok(())
     }
 
@@ -152,7 +163,9 @@ impl RedisClient {
     pub async fn test_connection(&self) -> Result<()> {
         let mut conn = self.get_connection().await?;
         // Test connection by trying to get a non-existent key
-        let _: Option<String> = conn.get("__test_connection__").await
+        let _: Option<String> = conn
+            .get("__test_connection__")
+            .await
             .context("Failed to test Redis connection")?;
         Ok(())
     }
@@ -183,7 +196,11 @@ pub fn create_job_progress(
 }
 
 /// Helper function to create a job log entry
-pub fn create_job_log(level: String, message: String, data: Option<serde_json::Value>) -> JobLogEntry {
+pub fn create_job_log(
+    level: String,
+    message: String,
+    data: Option<serde_json::Value>,
+) -> JobLogEntry {
     JobLogEntry {
         timestamp: chrono::Utc::now(),
         level,
@@ -191,4 +208,3 @@ pub fn create_job_log(level: String, message: String, data: Option<serde_json::V
         data,
     }
 }
-

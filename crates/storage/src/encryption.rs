@@ -1,18 +1,19 @@
-use anyhow::Result;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
-use sha2::{Sha256, Digest};
+use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 /// Encrypt artifact using AES-256-GCM
 pub fn encrypt_artifact(data: &[u8], key: &[u8]) -> Result<EncryptedArtifact> {
     let cipher = Aes256Gcm::new_from_slice(key)?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    
-    let ciphertext = cipher.encrypt(&nonce, data)
+
+    let ciphertext = cipher
+        .encrypt(&nonce, data)
         .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
-    
+
     Ok(EncryptedArtifact {
         ciphertext,
         nonce: nonce.to_vec(),
@@ -24,10 +25,11 @@ pub fn encrypt_artifact(data: &[u8], key: &[u8]) -> Result<EncryptedArtifact> {
 pub fn decrypt_artifact(encrypted: &EncryptedArtifact, key: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(key)?;
     let nonce = Nonce::from_slice(&encrypted.nonce);
-    
-    let plaintext = cipher.decrypt(nonce, encrypted.ciphertext.as_ref())
+
+    let plaintext = cipher
+        .decrypt(nonce, encrypted.ciphertext.as_ref())
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
-    
+
     Ok(plaintext)
 }
 
@@ -68,22 +70,28 @@ impl EncryptedArtifact {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         let mut offset = 0;
-        
+
         let nonce_len = u32::from_le_bytes([
-            data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
         ]) as usize;
         offset += 4;
-        
+
         let nonce = data[offset..offset + nonce_len].to_vec();
         offset += nonce_len;
-        
+
         let ciphertext_len = u32::from_le_bytes([
-            data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
         ]) as usize;
         offset += 4;
-        
+
         let ciphertext = data[offset..offset + ciphertext_len].to_vec();
-        
+
         Ok(EncryptedArtifact {
             ciphertext,
             nonce,
@@ -102,4 +110,3 @@ pub struct ArtifactMetadata {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
-

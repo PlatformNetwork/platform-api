@@ -16,30 +16,15 @@ WORKDIR /build
 
 # Copy only Cargo files first
 COPY Cargo.toml Cargo.lock ./
+COPY crates/*/Cargo.toml crates/*/
+COPY bins/*/Cargo.toml bins/*/
 
-# Create directory structure and copy Cargo.toml files
-RUN mkdir -p crates/api crates/storage crates/models \
-             crates/scheduler crates/builder crates/attestation \
-             crates/kbs crates/autoscaler \
-             bins/platform-api-server
-
-# Copy each Cargo.toml individually (COPY doesn't work well with wildcards)
-COPY crates/api/Cargo.toml crates/api/
-COPY crates/storage/Cargo.toml crates/storage/
-COPY crates/models/Cargo.toml crates/models/
-COPY crates/scheduler/Cargo.toml crates/scheduler/
-COPY crates/builder/Cargo.toml crates/builder/
-COPY crates/attestation/Cargo.toml crates/attestation/
-COPY crates/kbs/Cargo.toml crates/kbs/
-COPY crates/autoscaler/Cargo.toml crates/autoscaler/
-COPY bins/platform-api-server/Cargo.toml bins/platform-api-server/
-
-# Create dummy source files to build dependencies
+# Create dummy main.rs files to build dependencies
 RUN mkdir -p bins/platform-api-server/src && \
     echo "fn main() {}" > bins/platform-api-server/src/main.rs && \
-    for crate in api storage models scheduler builder attestation kbs autoscaler; do \
-        mkdir -p crates/$crate/src && \
-        echo "fn main() {}" > crates/$crate/src/lib.rs; \
+    for dir in crates/*; do \
+        mkdir -p $dir/src && \
+        echo "fn main() {}" > $dir/src/lib.rs; \
     done
 
 # Build dependencies with cache mount

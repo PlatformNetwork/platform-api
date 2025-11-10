@@ -1,12 +1,12 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use platform_api_models::{KeyReleaseRequest, KeyReleaseResponse};
-use serde::{Deserialize, Serialize};
 use ring::aead::{Aad, BoundKey, Nonce, NonceSequence, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 /// Key Broker Service with envelope encryption
 pub struct KeyBrokerService {
@@ -32,24 +32,29 @@ impl KeyBrokerService {
 
     pub async fn release_key(&self, request: KeyReleaseRequest) -> Result<KeyReleaseResponse> {
         tracing::info!("Releasing key for session: {}", request.session_token);
-        
+
         // Generate encryption key
         let mut key_bytes = vec![0u8; 32];
-        self.random.fill(&mut key_bytes)
+        self.random
+            .fill(&mut key_bytes)
             .context("Failed to generate random key")?;
-        
+
         let session_token = request.session_token.clone();
-        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(self.config.session_timeout as i64);
-        
+        let expires_at =
+            chrono::Utc::now() + chrono::Duration::seconds(self.config.session_timeout as i64);
+
         // Store session
         let session_info = SessionInfo {
             key_id: uuid::Uuid::new_v4().to_string(),
             key_material: key_bytes.clone(),
             expires_at,
         };
-        
-        self.sessions.write().await.insert(session_token.clone(), session_info);
-        
+
+        self.sessions
+            .write()
+            .await
+            .insert(session_token.clone(), session_info);
+
         Ok(KeyReleaseResponse {
             sealed_key: key_bytes,
             key_id: uuid::Uuid::new_v4().to_string(),
@@ -61,7 +66,7 @@ impl KeyBrokerService {
 
     pub async fn verify_key(&self, request: VerifyKeyRequest) -> Result<VerifyKeyResponse> {
         let sessions = self.sessions.read().await;
-        
+
         if let Some(session) = sessions.get(&request.session_token) {
             if session.expires_at > chrono::Utc::now() {
                 return Ok(VerifyKeyResponse {
@@ -79,7 +84,7 @@ impl KeyBrokerService {
                 });
             }
         }
-        
+
         Ok(VerifyKeyResponse {
             is_valid: false,
             key_info: KeyInfo {
@@ -141,4 +146,3 @@ pub struct KeyInfo {
     pub usage_count: u32,
     pub max_usage: Option<u32>,
 }
-

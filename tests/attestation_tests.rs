@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 // Helper to create test attestation service
 fn create_test_attestation_service() -> AttestationService {
-    let config = AttestationConfig {
-        pccs_url: None,
-        session_timeout: 3600,
-        allowed_usages: vec![],
-    };
+    // Use test configuration
+    std::env::set_var("TEE_ENFORCED", "false");
+    std::env::set_var("DEV_MODE", "true");
+    std::env::set_var("JWT_SECRET", "test-secret");
+    
+    let config = platform_api_attestation::TdxConfig::from_env();
     AttestationService::new(&config).expect("Failed to create AttestationService")
 }
 

@@ -5,24 +5,27 @@ use axum::{
 };
 use uuid::Uuid;
 
-use platform_api_models::{
-    EmissionSchedule, EmissionAggregate, ChallengeEmissionMetrics,
-    ValidatorEmissionMetrics, MinerEmissionMetrics, CalculateEmissionRequest,
-    CalculateEmissionResponse, CreateEmissionScheduleRequest, 
-    UpdateEmissionScheduleRequest, DistributeEmissionRequest, EmissionReport, PlatformResult
-};
 use crate::state::AppState;
+use platform_api_models::{
+    CalculateEmissionRequest, CalculateEmissionResponse, ChallengeEmissionMetrics,
+    CreateEmissionScheduleRequest, DistributeEmissionRequest, EmissionAggregate, EmissionReport,
+    EmissionSchedule, MinerEmissionMetrics, PlatformResult, UpdateEmissionScheduleRequest,
+    ValidatorEmissionMetrics,
+};
 
 /// List emission schedules handler
 pub async fn list_emissions_handler(
     state: State<AppState>,
     params: Query<ListEmissionsParams>,
 ) -> PlatformResult<Json<Vec<EmissionSchedule>>> {
-    let emissions = state.storage.list_emission_schedules(
-        params.status.clone(),
-        params.emission_type.clone(),
-        params.challenge_id,
-    ).await?;
+    let emissions = state
+        .storage
+        .list_emission_schedules(
+            params.status.clone(),
+            params.emission_type.clone(),
+            params.challenge_id,
+        )
+        .await?;
 
     Ok(Json(emissions))
 }
@@ -51,7 +54,10 @@ pub async fn update_emission_schedule_handler(
     id: Path<Uuid>,
     request: Json<UpdateEmissionScheduleRequest>,
 ) -> PlatformResult<Json<EmissionSchedule>> {
-    let schedule = state.storage.update_emission_schedule(*id, request.0).await?;
+    let schedule = state
+        .storage
+        .update_emission_schedule(*id, request.0)
+        .await?;
     Ok(Json(schedule))
 }
 
@@ -79,10 +85,10 @@ pub async fn get_emission_aggregate_handler(
     state: State<AppState>,
     params: Query<GetEmissionAggregateParams>,
 ) -> PlatformResult<Json<EmissionAggregate>> {
-    let aggregate = state.storage.get_emission_aggregate(
-        params.period_start,
-        params.period_end,
-    ).await?;
+    let aggregate = state
+        .storage
+        .get_emission_aggregate(params.period_start, params.period_end)
+        .await?;
 
     Ok(Json(aggregate))
 }
@@ -101,7 +107,10 @@ pub async fn get_validator_emission_metrics_handler(
     state: State<AppState>,
     hotkey: Path<String>,
 ) -> PlatformResult<Json<ValidatorEmissionMetrics>> {
-    let metrics = state.storage.get_validator_emission_metrics(&hotkey).await?;
+    let metrics = state
+        .storage
+        .get_validator_emission_metrics(&hotkey)
+        .await?;
     Ok(Json(metrics))
 }
 
@@ -119,10 +128,10 @@ pub async fn get_emission_report_handler(
     state: State<AppState>,
     params: Query<GetEmissionReportParams>,
 ) -> PlatformResult<Json<EmissionReport>> {
-    let report = state.storage.get_emission_report(
-        params.period_start,
-        params.period_end,
-    ).await?;
+    let report = state
+        .storage
+        .get_emission_report(params.period_start, params.period_end)
+        .await?;
 
     Ok(Json(report))
 }

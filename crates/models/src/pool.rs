@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 /// Validator pool for managing TEE nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,4 +207,3 @@ pub struct PoolCapacitySummary {
     pub has_tdx: bool,
     pub gpu_count: u32,
 }
-

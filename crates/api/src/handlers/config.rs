@@ -5,16 +5,14 @@ use axum::{
 };
 use uuid::Uuid;
 
-use platform_api_models::{
-    SubnetConfig, UpdateConfigRequest, ConfigResponse, 
-    ConfigValidationResult, ConfigBackup, RestoreConfigRequest, PlatformResult
-};
 use crate::state::AppState;
+use platform_api_models::{
+    ConfigBackup, ConfigResponse, ConfigValidationResult, PlatformResult, RestoreConfigRequest,
+    SubnetConfig, UpdateConfigRequest,
+};
 
 /// Get subnet configuration handler
-pub async fn get_config_handler(
-    state: State<AppState>,
-) -> PlatformResult<Json<ConfigResponse>> {
+pub async fn get_config_handler(state: State<AppState>) -> PlatformResult<Json<ConfigResponse>> {
     let config = state.storage.get_subnet_config().await?;
     Ok(Json(ConfigResponse {
         config: config.clone(),
@@ -46,9 +44,18 @@ pub async fn update_config_handler(
     let config = platform_api_models::SubnetConfig {
         owner_hotkey: request.owner_hotkey.clone().unwrap_or(current.owner_hotkey),
         rake: request.rake.unwrap_or(current.rake),
-        validator_set_hints: request.validator_set_hints.clone().unwrap_or(current.validator_set_hints),
-        timing_windows: request.timing_windows.clone().unwrap_or(current.timing_windows),
-        emission_schedule: request.emission_schedule.clone().unwrap_or(current.emission_schedule),
+        validator_set_hints: request
+            .validator_set_hints
+            .clone()
+            .unwrap_or(current.validator_set_hints),
+        timing_windows: request
+            .timing_windows
+            .clone()
+            .unwrap_or(current.timing_windows),
+        emission_schedule: request
+            .emission_schedule
+            .clone()
+            .unwrap_or(current.emission_schedule),
         updated_at: chrono::Utc::now(),
         version: current.version + 1,
     };
@@ -70,10 +77,13 @@ pub async fn create_backup_handler(
     state: State<AppState>,
     request: Json<CreateBackupRequest>,
 ) -> PlatformResult<Json<ConfigBackup>> {
-    let backup = state.storage.create_config_backup(platform_api_storage::CreateBackupRequest {
-        reason: request.reason.clone(),
-        tags: request.tags.clone(),
-    }).await?;
+    let backup = state
+        .storage
+        .create_config_backup(platform_api_storage::CreateBackupRequest {
+            reason: request.reason.clone(),
+            tags: request.tags.clone(),
+        })
+        .await?;
     Ok(Json(backup))
 }
 

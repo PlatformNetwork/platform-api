@@ -1,23 +1,23 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
+use uuid::Uuid;
 
-pub mod challenge;
-pub mod job;
 pub mod attestation;
+pub mod challenge;
 pub mod config;
 pub mod emissions;
 pub mod errors;
+pub mod job;
 pub mod pool;
 
-pub use challenge::*;
-pub use job::*;
 pub use attestation::*;
+pub use challenge::*;
 pub use config::*;
 pub use emissions::*;
 pub use errors::*;
+pub use job::*;
 pub use pool::*;
 
 // Type aliases for backwards compatibility
@@ -60,5 +60,3 @@ pub type KeyMaterial = Vec<u8>;
 
 /// Receipt type for audit trails
 pub type Receipt = String;
-
-

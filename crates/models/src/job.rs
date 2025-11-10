@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::{Digest, Hotkey, Id, RuntimeType, Score};
 use chrono::{DateTime, Utc};
-use super::{Id, Hotkey, Digest, RuntimeType, Score};
+use serde::{Deserialize, Serialize};
 
 /// Job status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -146,6 +146,4 @@ pub struct JobStats {
     pub success_rate: f64,
 }
 
-use super::challenge::{HarnessBundle, DatasetArtifact, ResourceLimits};
-
-
+use super::challenge::{DatasetArtifact, HarnessBundle, ResourceLimits};

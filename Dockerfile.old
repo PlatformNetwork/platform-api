@@ -1,0 +1,94 @@
+# ------------------------------------------------------------------------------
+#  Platform API Dockerfile (optimized for Rust/Cargo with proper caching)
+#  – Uses sccache and cargo-chef for optimal dependency caching
+#  – Final runtime images run as non-root `platform` user (UID/GID 10001)
+# ------------------------------------------------------------------------------
+
+###############################################################################
+# ---------- 1. Cargo Chef Planner (extracts dependencies) ------------------
+###############################################################################
+FROM rust:1.90.0-slim AS chef
+RUN cargo install cargo-chef
+WORKDIR /build
+
+###############################################################################
+# ---------- 2. Plan stage (analyzes dependencies) ---------------------------
+###############################################################################
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+###############################################################################
+# ---------- 3. Builder stage (caches dependencies separately) --------------
+###############################################################################
+FROM chef AS builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev libgit2-dev ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the recipe (dependency list)
+COPY --from=planner /build/recipe.json recipe.json
+
+# Build ONLY dependencies - this layer is cached until Cargo.toml changes
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source code
+COPY . .
+
+# Build the actual application - only this rebuilds when source changes
+# Use cache mount for better performance
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target,id=rust-cache-platform-api,sharing=locked \
+    cargo build --release --bin platform-api-server && \
+    # Copy out the binary before the cache mount is unmounted
+    cp /build/target/release/platform-api-server /platform-api-server
+
+###############################################################################
+# ---------- 4. Runtime stage (minimal image) --------------------------------
+###############################################################################
+FROM debian:testing-slim AS runtime
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 libgit2-1.9 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd --system --gid 10001 platform && \
+    useradd --system --uid 10001 --gid 10001 --home /home/platform --create-home platform
+
+# Create data directory
+RUN mkdir -p /data && chown -R platform:platform /data
+
+WORKDIR /home/platform
+
+# Copy binary from builder
+COPY --from=builder /platform-api-server /usr/local/bin/platform-api-server
+RUN chmod +x /usr/local/bin/platform-api-server && \
+    chown platform:platform /usr/local/bin/platform-api-server
+
+EXPOSE 15000 10090
+
+# Run as non-root user
+USER platform
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["sh", "-c", "curl -f http://localhost:${SERVER_PORT:-15000}/health || exit 1"]
+
+CMD ["/usr/local/bin/platform-api-server"]
+
+###############################################################################
+# ---------- 5. Development/Local stage --------------------------------------
+###############################################################################
+FROM runtime AS platform-api-local
+# Same as runtime for now
+
+###############################################################################
+# ---------- 6. Production stage ---------------------------------------------
+###############################################################################
+FROM runtime AS platform-api
+# Same as runtime
