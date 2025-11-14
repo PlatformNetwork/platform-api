@@ -255,3 +255,54 @@ pub struct EmissionReport {
     pub top_recipients: Vec<EmissionRecipient>,
     pub emission_trends: BTreeMap<String, f64>,
 }
+
+/// Subnet emissions breakdown from blockchain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubnetEmissions {
+    pub netuid: u16,
+    pub total_daily_emissions_tao: f64,
+    pub block_emission_rao: u64,
+    pub tempo: u64,
+    pub subnet_emission_percent: f64,
+    pub mechanisms: Vec<MechanismEmissionBreakdown>,
+}
+
+/// Mechanism emission breakdown
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MechanismEmissionBreakdown {
+    pub mechanism_id: u8,
+    pub emission_percentage: f64,
+    pub daily_emissions_tao: f64,
+    pub challenges: Vec<ChallengeEmissionBreakdown>,
+}
+
+/// Challenge emission breakdown
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeEmissionBreakdown {
+    pub challenge_id: Id,
+    pub challenge_name: String,
+    pub emission_share: f64,
+    pub daily_emissions_tao: f64,
+}
+
+/// Mechanism emissions response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MechanismEmissions {
+    pub netuid: u16,
+    pub mechanism_id: u8,
+    pub emission_percentage: f64,
+    pub daily_emissions_tao: f64,
+    pub challenges: Vec<ChallengeEmissionBreakdown>,
+}
+
+/// Challenge emissions response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeEmissions {
+    pub netuid: u16,
+    pub challenge_id: Id,
+    pub challenge_name: String,
+    pub mechanism_id: u8,
+    pub mechanism_emission_percentage: f64,
+    pub challenge_emission_share: f64,
+    pub daily_emissions_tao: f64,
+}

@@ -42,7 +42,7 @@ impl RaTlsVerifier {
             });
         }
 
-        tracing::info!("🔒 TEE verification ENABLED - Verifying client attestation");
+        tracing::debug!("TEE verification ENABLED - Verifying client attestation");
 
         let attestation_result = self.verify_tee_attestation(cert_der).await?;
 
@@ -63,7 +63,7 @@ impl RaTlsVerifier {
 
         tracing::info!("Certificate received: {} bytes", cert_der.len());
 
-        tracing::info!("✅ TEE attestation verified (RA-TLS certificate received)");
+        tracing::debug!("TEE attestation verified (RA-TLS certificate received)");
 
         Ok(AttestationResult {
             app_id: Some(cert_der[..std::cmp::min(16, cert_der.len())].to_vec()),

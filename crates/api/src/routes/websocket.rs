@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use sp_core::{crypto::Ss58Codec, sr25519};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -111,7 +111,7 @@ async fn handle_validator_socket(
                             if !tee_enforced {
                                 // Dev mode: Skip TDX attestation and authenticate directly
                                 warn!(
-                                    "🔧 DEV MODE: Skipping TDX attestation for validator {}",
+                                    "DEV MODE: Skipping TDX attestation for validator {}",
                                     hotkey
                                 );
                                 authenticated = true;
@@ -138,7 +138,7 @@ async fn handle_validator_socket(
                                     }
                                 }
 
-                                info!("✅ Validator {} authenticated (dev mode)", hotkey);
+                                debug!("Validator {} authenticated (dev mode)", hotkey);
                                 continue;
                             }
 
@@ -188,11 +188,11 @@ async fn handle_validator_socket(
                             // Verify message signature first
                             match verify_secure_message(&secure_msg, &hotkey).await {
                                 Ok(()) => {
-                                    info!("✅ Message signature verified for validator {}", hotkey);
+                                    debug!("Message signature verified for validator {}", hotkey);
                                 }
                                 Err(e) => {
                                     error!(
-                                        "❌ Signature verification failed for validator {}: {}",
+                                        "Signature verification failed for validator {}: {}",
                                         hotkey, e
                                     );
                                     let ack = serde_json::json!({
@@ -238,7 +238,7 @@ async fn handle_validator_socket(
                             // Verify challenge matches expected challenge
                             if received_challenge != expected_challenge {
                                 error!(
-                                    "❌ Challenge mismatch for validator {}: expected {}, got {}",
+                                    "Challenge mismatch for validator {}: expected {}, got {}",
                                     hotkey, expected_challenge, received_challenge
                                 );
                                 let ack = serde_json::json!({
@@ -345,9 +345,9 @@ async fn handle_validator_socket(
                             // Verify TDX attestation
                             match verify_validator_attestation(&state, &attestation_msg).await {
                                 Ok(compose_hash) => {
-                                    info!("✅ TDX attestation bound to session challenge for validator {}", hotkey);
-                                    info!(
-                                        "✅ Validator {} TDX verified. Compose hash: {}",
+                                    debug!("TDX attestation bound to session challenge for validator {}", hotkey);
+                                    debug!(
+                                        "Validator {} TDX verified. Compose hash: {}",
                                         hotkey, compose_hash
                                     );
                                     authenticated = true;
@@ -671,6 +671,7 @@ async fn handle_validator_socket(
                                     job_id: job_id.clone(),
                                     result,
                                     error,
+                                    validator_hotkey: Some(hotkey.clone()), // Include validator hotkey
                                 };
 
                                 let distributor = JobDistributor::new(state.clone());

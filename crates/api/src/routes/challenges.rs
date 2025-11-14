@@ -11,6 +11,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::state::AppState;
+use tracing::debug;
 use platform_api_models::{
     ChallengeDetailResponse, ChallengeListResponse, ChallengeMetadata, ChallengeStatus,
     ChallengeVisibility, CreateChallengeRequest, Hotkey, Id, PlatformResult,
@@ -22,6 +23,7 @@ pub fn create_router() -> Router<AppState> {
     Router::new()
         .route("/challenges", get(list_challenges).post(create_challenge))
         .route("/challenges/active", get(get_active_challenges))
+        .route("/challenges/public", get(list_challenges_public))
         .route("/challenges/debug", get(debug_challenges))
         .route(
             "/challenges/:id",
@@ -29,6 +31,7 @@ pub fn create_router() -> Router<AppState> {
                 .put(update_challenge)
                 .delete(delete_challenge),
         )
+        .route("/challenges/:id/public", get(get_challenge_public))
         .route("/challenges/:id/emissions", get(get_challenge_emissions))
         .route("/challenges/:id/jobs", get(get_challenge_jobs))
         .route(
@@ -42,11 +45,10 @@ pub async fn list_challenges(
     State(state): State<AppState>,
     Query(params): Query<ListChallengesParams>,
 ) -> Result<Json<ChallengeListResponse>, StatusCode> {
-    eprintln!("🚨 [list_challenges] FUNCTION CALLED - This should appear in logs!");
-    tracing::info!("🔍 [list_challenges] Starting challenge list query");
+    debug!("Starting challenge list query");
 
     let pool = state.database_pool.as_ref().ok_or_else(|| {
-        tracing::error!("❌ [list_challenges] Database pool not available");
+        tracing::error!("Database pool not available");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
 
@@ -54,29 +56,26 @@ pub async fn list_challenges(
     let per_page = params.per_page.unwrap_or(20);
     let offset = (page - 1) * per_page;
 
-    tracing::info!(
-        "📊 [list_challenges] Query parameters: page={}, per_page={}, offset={}",
+    debug!(
+        "Query parameters: page={}, per_page={}, offset={}",
         page,
         per_page,
         offset
     );
 
     // First, get total count
-    tracing::info!("🔍 [list_challenges] Executing COUNT query: SELECT COUNT(*) FROM challenges");
+    debug!("Executing COUNT query");
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM challenges")
         .persistent(false)
         .fetch_one(pool.as_ref())
         .await
         .map_err(|e| {
-            tracing::error!("❌ [list_challenges] Failed to count challenges: {}", e);
+            tracing::error!("Failed to count challenges: {}", e);
             tracing::error!("   Error details: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::info!(
-        "📊 [list_challenges] Total challenges in database: {}",
-        total
-    );
+    debug!("Total challenges in database: {}", total);
 
     // Query challenges from database with pagination
     #[derive(sqlx::FromRow)]
@@ -112,11 +111,7 @@ pub async fn list_challenges(
         LIMIT $1 OFFSET $2
         "#;
 
-    tracing::info!(
-        "🔍 [list_challenges] Executing SELECT query with LIMIT={}, OFFSET={}",
-        per_page,
-        offset
-    );
+    debug!("Executing SELECT query with LIMIT={}, OFFSET={}", per_page, offset);
     tracing::debug!("   SQL: {}", query_sql);
 
     let rows = sqlx::query_as::<_, ChallengeRow>(query_sql)
@@ -126,20 +121,17 @@ pub async fn list_challenges(
         .fetch_all(pool.as_ref())
         .await
         .map_err(|e| {
-            tracing::error!("❌ [list_challenges] Failed to query challenges: {}", e);
+            tracing::error!("Failed to query challenges: {}", e);
             tracing::error!("   Error details: {:?}", e);
             tracing::error!("   SQL query: {}", query_sql);
             tracing::error!("   Parameters: LIMIT={}, OFFSET={}", per_page, offset);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::info!(
-        "📊 [list_challenges] Query returned {} rows from database",
-        rows.len()
-    );
+    debug!("Query returned {} rows from database", rows.len());
 
     if rows.is_empty() && total > 0 {
-        tracing::warn!("⚠️  [list_challenges] No rows returned but total count is {} - possible pagination issue", total);
+        tracing::warn!("No rows returned but total count is {} - possible pagination issue", total);
     }
 
     // Log each challenge found
@@ -171,17 +163,11 @@ pub async fn list_challenges(
         })
         .collect();
 
-    tracing::info!(
-        "📊 [list_challenges] Converted {} rows to ChallengeMetadata",
-        challenges.len()
-    );
+    debug!("Converted {} rows to ChallengeMetadata", challenges.len());
 
     // Apply status filter if provided (in-memory filter since status is not in DB yet)
     let filtered_challenges: Vec<ChallengeMetadata> = if let Some(status_filter) = &params.status {
-        tracing::info!(
-            "🔍 [list_challenges] Applying status filter: {}",
-            status_filter
-        );
+        debug!("Applying status filter: {}", status_filter);
         let filtered: Vec<ChallengeMetadata> = challenges
             .into_iter()
             .filter(|c| match status_filter.as_str() {
@@ -192,10 +178,7 @@ pub async fn list_challenges(
                 _ => true,
             })
             .collect();
-        tracing::info!(
-            "📊 [list_challenges] After status filter: {} challenges",
-            filtered.len()
-        );
+        debug!("After status filter: {} challenges", filtered.len());
         filtered
     } else {
         challenges
@@ -208,18 +191,10 @@ pub async fn list_challenges(
         per_page,
     };
 
-    tracing::info!(
-        "✅ [list_challenges] Returning {} challenges (page {}, per_page {}, total {})",
-        response.challenges.len(),
-        page,
-        per_page,
-        total
-    );
+    debug!("Returning {} challenges (page {}, per_page {}, total {})", response.challenges.len(), page, per_page, total);
 
     if response.challenges.is_empty() && total == 0 {
-        tracing::warn!(
-            "⚠️  [list_challenges] No challenges found in database! Table 'challenges' is empty."
-        );
+        tracing::warn!("No challenges found in database! Table 'challenges' is empty.");
         tracing::warn!(
             "   Hint: Check if migrations have been applied and if data has been inserted."
         );
@@ -396,7 +371,7 @@ pub async fn get_active_challenges(
     })?;
 
     tracing::info!(
-        "📋 get_active_challenges: returning {} challenges from database",
+        "get_active_challenges: returning {} challenges from database",
         rows.len()
     );
 
@@ -419,7 +394,7 @@ pub async fn debug_challenges(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    tracing::info!("🔍 [debug_challenges] Starting diagnostic query");
+    debug!("Starting diagnostic query");
 
     // Get total count
     let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM challenges")
@@ -516,7 +491,7 @@ pub async fn debug_challenges(
     });
 
     tracing::info!(
-        "✅ [debug_challenges] Diagnostic complete: {} challenges found",
+        "Diagnostic complete: {} challenges found",
         total_count
     );
 
@@ -624,4 +599,284 @@ pub async fn store_challenge_env_vars(
         "stored_count": request.env_vars.len(),
         "message": "Environment variables stored successfully"
     })))
+}
+
+/// Public challenge response structure
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PublicChallengeResponse {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub description: Option<String>,
+    pub difficulty: Option<String>,
+    pub mechanism_id: i16,
+    pub emission_share: f64,
+    pub github_repo: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub stats: ChallengeStats,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ChallengeStats {
+    pub participant_count: usize,
+    pub jobs_processed: usize,
+    pub success_rate: f64,
+    pub pool_size_tao: f64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PublicChallengeListResponse {
+    pub challenges: Vec<PublicChallengeResponse>,
+    pub total: usize,
+}
+
+/// List public challenges (read-only, active challenges only)
+pub async fn list_challenges_public(
+    State(state): State<AppState>,
+) -> Result<Json<PublicChallengeListResponse>, StatusCode> {
+    let pool = state.database_pool.as_ref().ok_or_else(|| {
+        tracing::error!("Database pool not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    #[derive(sqlx::FromRow)]
+    struct ChallengeRow {
+        id: uuid::Uuid,
+        name: String,
+        mechanism_id: i16,
+        emission_share: f64,
+        description: Option<String>,
+        github_repo: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    // Get active challenges (those with recent jobs)
+    let challenges = sqlx::query_as::<_, ChallengeRow>(
+        r#"
+        SELECT DISTINCT
+            c.id, c.name, c.mechanism_id, c.emission_share, c.description, c.github_repo,
+            c.created_at, c.updated_at
+        FROM challenges c
+        INNER JOIN jobs j ON j.challenge_id = c.id
+        WHERE j.created_at > NOW() - INTERVAL '30 days'
+        ORDER BY c.created_at DESC
+        "#,
+    )
+    .persistent(false)
+    .fetch_all(pool.as_ref())
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to query public challenges: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut public_challenges = Vec::new();
+
+    for challenge in challenges {
+        // Get stats for this challenge
+        let participant_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(DISTINCT miner_hotkey) 
+            FROM jobs 
+            WHERE challenge_id = $1
+            "#,
+        )
+        .bind(challenge.id)
+        .persistent(false)
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap_or(0);
+
+        let jobs_processed: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) 
+            FROM jobs 
+            WHERE challenge_id = $1
+            "#,
+        )
+        .bind(challenge.id)
+        .persistent(false)
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap_or(0);
+
+        let completed_jobs: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) 
+            FROM jobs 
+            WHERE challenge_id = $1 AND status = 'completed'
+            "#,
+        )
+        .bind(challenge.id)
+        .persistent(false)
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap_or(0);
+
+        let success_rate = if jobs_processed > 0 {
+            (completed_jobs as f64 / jobs_processed as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Calculate pool size (simplified - would need actual emissions data)
+        let pool_size_tao = challenge.emission_share * 1000.0; // Assuming 1000 TAO/day total
+
+        // Determine difficulty
+        let difficulty = if challenge.emission_share > 0.5 {
+            Some("Expert".to_string())
+        } else if challenge.emission_share > 0.3 {
+            Some("Hard".to_string())
+        } else if challenge.emission_share > 0.1 {
+            Some("Medium".to_string())
+        } else {
+            Some("Easy".to_string())
+        };
+
+        public_challenges.push(PublicChallengeResponse {
+            id: challenge.id.to_string(),
+            name: challenge.name,
+            status: "live".to_string(),
+            description: challenge.description,
+            difficulty,
+            mechanism_id: challenge.mechanism_id,
+            emission_share: challenge.emission_share,
+            github_repo: challenge.github_repo,
+            created_at: challenge.created_at.to_rfc3339(),
+            updated_at: challenge.updated_at.to_rfc3339(),
+            stats: ChallengeStats {
+                participant_count: participant_count as usize,
+                jobs_processed: jobs_processed as usize,
+                success_rate,
+                pool_size_tao,
+            },
+        });
+    }
+
+    Ok(Json(PublicChallengeListResponse {
+        total: public_challenges.len(),
+        challenges: public_challenges,
+    }))
+}
+
+/// Get public challenge details (read-only)
+pub async fn get_challenge_public(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PublicChallengeResponse>, StatusCode> {
+    let pool = state.database_pool.as_ref().ok_or_else(|| {
+        tracing::error!("Database pool not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    #[derive(sqlx::FromRow)]
+    struct ChallengeRow {
+        id: uuid::Uuid,
+        name: String,
+        mechanism_id: i16,
+        emission_share: f64,
+        description: Option<String>,
+        github_repo: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let challenge = sqlx::query_as::<_, ChallengeRow>(
+        r#"
+        SELECT 
+            id, name, mechanism_id, emission_share, description, github_repo,
+            created_at, updated_at
+        FROM challenges
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .persistent(false)
+    .fetch_optional(pool.as_ref())
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to query challenge: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let challenge = challenge.ok_or(StatusCode::NOT_FOUND)?;
+
+    // Get stats
+    let participant_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(DISTINCT miner_hotkey) 
+        FROM jobs 
+        WHERE challenge_id = $1
+        "#,
+    )
+    .bind(challenge.id)
+    .persistent(false)
+    .fetch_one(pool.as_ref())
+    .await
+    .unwrap_or(0);
+
+    let jobs_processed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) 
+        FROM jobs 
+        WHERE challenge_id = $1
+        "#,
+    )
+    .bind(challenge.id)
+    .persistent(false)
+    .fetch_one(pool.as_ref())
+    .await
+    .unwrap_or(0);
+
+    let completed_jobs: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) 
+        FROM jobs 
+        WHERE challenge_id = $1 AND status = 'completed'
+        "#,
+    )
+    .bind(challenge.id)
+    .persistent(false)
+    .fetch_one(pool.as_ref())
+    .await
+    .unwrap_or(0);
+
+    let success_rate = if jobs_processed > 0 {
+        (completed_jobs as f64 / jobs_processed as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let pool_size_tao = challenge.emission_share * 1000.0; // Simplified calculation
+
+    let difficulty = if challenge.emission_share > 0.5 {
+        Some("Expert".to_string())
+    } else if challenge.emission_share > 0.3 {
+        Some("Hard".to_string())
+    } else if challenge.emission_share > 0.1 {
+        Some("Medium".to_string())
+    } else {
+        Some("Easy".to_string())
+    };
+
+    Ok(Json(PublicChallengeResponse {
+        id: challenge.id.to_string(),
+        name: challenge.name,
+        status: "live".to_string(),
+        description: challenge.description,
+        difficulty,
+        mechanism_id: challenge.mechanism_id,
+        emission_share: challenge.emission_share,
+        github_repo: challenge.github_repo,
+        created_at: challenge.created_at.to_rfc3339(),
+        updated_at: challenge.updated_at.to_rfc3339(),
+        stats: ChallengeStats {
+            participant_count: participant_count as usize,
+            jobs_processed: jobs_processed as usize,
+            success_rate,
+            pool_size_tao,
+        },
+    }))
 }

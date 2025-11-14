@@ -3,6 +3,7 @@ use crate::models::JobCache;
 use crate::orm_gateway::{ORMGatewayConfig, SecureORMGateway};
 use crate::redis_client::RedisClient;
 use crate::security::PlatformSecurity;
+use crate::services::BittensorService;
 use chrono::{DateTime, Utc};
 use hex;
 use platform_api_attestation::AttestationService;
@@ -40,6 +41,7 @@ pub struct AppState {
     pub job_cache: Arc<tokio::sync::RwLock<HashMap<String, JobCache>>>, // Key: job_id -> JobCache
     pub redis_client: Option<Arc<RedisClient>>,         // Redis client for job progress logging
     pub chutes_api_token: Arc<tokio::sync::RwLock<Option<String>>>, // CHUTES API token for platform-api (decrypted)
+    pub bittensor: Option<Arc<BittensorService>>, // Bittensor service for blockchain queries
 }
 
 /// Validator connection information
@@ -201,6 +203,22 @@ impl AppState {
             }
         }
 
+        // Initialize Bittensor service
+        let bittensor_endpoint = std::env::var("BT_ENDPOINT").ok();
+        let bittensor_netuid = std::env::var("BT_NETUID")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let bittensor = match BittensorService::new(bittensor_netuid, bittensor_endpoint).await {
+            Ok(service) => {
+                info!("BittensorService initialized successfully");
+                Some(Arc::new(service))
+            }
+            Err(e) => {
+                warn!("Failed to initialize BittensorService: {}. Emission calculation APIs will not be available.", e);
+                None
+            }
+        };
+
         Ok(Self {
             storage,
             attestation,
@@ -221,6 +239,7 @@ impl AppState {
             job_cache,
             redis_client,
             chutes_api_token,
+            bittensor,
         })
     }
 

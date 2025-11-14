@@ -38,6 +38,7 @@ pub struct JobResult {
     pub job_id: String,
     pub result: Value,
     pub error: Option<String>,
+    pub validator_hotkey: Option<String>, // Validator hotkey that executed the job
 }
 
 /// Job distributor manages distribution of jobs from challenge SDK to validators
@@ -358,18 +359,93 @@ impl JobDistributor {
                 }
             }
 
-            // Forward result to challenge CVM if URL is available
-            // Note: The actual forwarding is handled in websocket.rs when receiving job_result from validators
-            if let Some(challenge_cvm_ws_url) = &job_cache.challenge_cvm_ws_url {
-                info!(
-                    job_id = &result.job_id,
-                    challenge_cvm_url = challenge_cvm_ws_url,
-                    "Job result will be forwarded to challenge CVM via websocket.rs handler"
-                );
+            // Forward result to challenge via HTTP endpoint
+            // Try to find challenge instance and call receive_job_result endpoint
+            if let Some(challenge_runner) = &self.state.challenge_runner {
+                let running_challenges = challenge_runner.list_running_challenges().await;
+                
+                // Find challenge by challenge_id from job_cache
+                let challenge_instance = running_challenges
+                    .iter()
+                    .find(|inst| inst.challenge_id == job_cache.challenge_id || inst.name == job_cache.challenge_id);
+                
+                if let Some(instance) = challenge_instance {
+                    if let Some(cvm_api_url) = &instance.cvm_api_url {
+                        // Build target URL for receive_job_result endpoint
+                        let target_url = format!(
+                            "{}/sdk/public/receive_job_result",
+                            cvm_api_url.trim_end_matches('/')
+                        );
+                        
+                        // Prepare payload for receive_job_result
+                        // Use validator_hotkey from result if available, otherwise use first assigned validator
+                        let validator_hotkey = result.validator_hotkey
+                            .or_else(|| job_cache.assigned_validators.first().cloned())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        
+                        let payload = serde_json::json!({
+                            "job_id": result.job_id,
+                            "validator_hotkey": validator_hotkey,
+                            "result": result.result,
+                            "error": result.error
+                        });
+                        
+                        // Create HTTP client
+                        let client = reqwest::Client::builder()
+                            .danger_accept_invalid_certs(true) // Accept self-signed certs from CVMs
+                            .timeout(std::time::Duration::from_secs(30))
+                            .build()
+                            .context("Failed to create HTTP client")?;
+                        
+                        // Call receive_job_result endpoint
+                        match client
+                            .post(&target_url)
+                            .header("Content-Type", "application/json")
+                            .json(&payload)
+                            .send()
+                            .await
+                        {
+                            Ok(response) => {
+                                if response.status().is_success() {
+                                    info!(
+                                        job_id = &result.job_id,
+                                        challenge_id = &job_cache.challenge_id,
+                                        "Job result successfully forwarded to challenge"
+                                    );
+                                } else {
+                                    warn!(
+                                        job_id = &result.job_id,
+                                        status = response.status().as_u16(),
+                                        "Failed to forward job result to challenge (non-success status)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    job_id = &result.job_id,
+                                    error = %e,
+                                    "Failed to forward job result to challenge"
+                                );
+                            }
+                        }
+                    } else {
+                        warn!(
+                            job_id = &result.job_id,
+                            challenge_id = &job_cache.challenge_id,
+                            "Challenge instance has no CVM API URL"
+                        );
+                    }
+                } else {
+                    warn!(
+                        job_id = &result.job_id,
+                        challenge_id = &job_cache.challenge_id,
+                        "Challenge instance not found for forwarding job result"
+                    );
+                }
             } else {
                 warn!(
                     job_id = &result.job_id,
-                    "No challenge_cvm_ws_url in job cache, cannot forward result"
+                    "Challenge runner not available, cannot forward job result"
                 );
             }
 

@@ -22,6 +22,7 @@ pub mod orm_gateway;
 pub mod redis_client;
 pub mod routes;
 pub mod security;
+pub mod services;
 pub mod state;
 
 pub use handlers::*;
@@ -55,7 +56,10 @@ pub fn create_router(state: AppState) -> Router {
         .merge(routes::challenge_credentials::create_router())
         .merge(routes::orm::create_router())
         .merge(routes::metagraph::create_router())
-        .merge(routes::challenge_proxy::create_router());
+        .merge(routes::challenge_proxy::create_router())
+        .merge(routes::mechanisms::create_router())
+        .merge(routes::network::create_router())
+        .merge(routes::validators::create_router());
 
     // Apply security middleware ONLY in production
     // In dev mode, NO authentication middleware is applied

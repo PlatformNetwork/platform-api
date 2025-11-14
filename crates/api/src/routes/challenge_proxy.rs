@@ -162,7 +162,7 @@ async fn verify_miner_signature(
 
 /// Check if an endpoint is a public read-only endpoint that doesn't require signature
 fn is_public_readonly_endpoint(route_name: &str) -> bool {
-    matches!(route_name, "get_agent_status" | "list_agents")
+    matches!(route_name, "get_agent_status" | "list_agents" | "list_agent_jobs")
 }
 
 /// Proxy GET request to challenge CVM

@@ -179,6 +179,7 @@ async fn test_job_result_forwarding() {
             "metrics": {"accuracy": 0.95, "speed": 1.5}
         }),
         error: None,
+        validator_hotkey: Some("test_validator".to_string()),
     };
     
     // Forward result
@@ -383,6 +384,7 @@ async fn test_job_retry_distribution() {
         job_id: job_id.clone(),
         result: json!({}),
         error: Some("Job failed".to_string()),
+        validator_hotkey: Some("test_validator".to_string()),
     };
     
     distributor.forward_job_result(job_result).await

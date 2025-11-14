@@ -71,7 +71,11 @@ sp-core = "38.1"
 sp-runtime = "44.0"
 
 # Bittensor SDK for metagraph sync
-bittensor-rs = { git = "https://github.com/CortexLM/bittensor-rs" }
+# Use local path for development (change to git for production)
+# Note: In Docker build, bittensor-rs is copied to /build/bittensor-rs
+# In local development, use ../bittensor-rs
+bittensor-rs = { path = "../bittensor-rs" }
+# bittensor-rs = { git = "https://github.com/CortexLM/bittensor-rs" }
 
 # DCAP/SGX/TDX
 dcap-qvl = "0.3"

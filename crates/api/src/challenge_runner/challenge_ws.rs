@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 /// Envelope used for encrypted WebSocket frames
@@ -265,11 +265,11 @@ impl ChallengeWsClient {
                                 == "false";
 
                         if dev_mode {
-                            warn!("🔧 DEV MODE: Skipping TDX quote verification");
+                            debug!("DEV MODE: Skipping TDX quote verification");
                         } else if let Some(quote_b64) = json.get("quote").and_then(|v| v.as_str()) {
                             match Self::verify_tdx_quote(quote_b64, &nonce).await {
                                 Ok(_) => {
-                                    info!("✅ TDX quote verified successfully");
+                                    debug!("TDX quote verified successfully");
                                 }
                                 Err(e) => {
                                     error!("TDX quote verification failed: {}", e);
@@ -293,7 +293,7 @@ impl ChallengeWsClient {
                         if dev_mode {
                             // In dev mode, challenge skips attestation_ok and uses plain text
                             // We need to detect this and use plain text messages
-                            warn!("🔧 DEV MODE: Challenge will use plain text session, skipping attestation_ok");
+                            debug!("DEV MODE: Challenge will use plain text session, skipping attestation_ok");
                             // Use a dummy key for compatibility, but we'll send plain text messages
                             break key_bytes;
                         } else {
@@ -311,7 +311,7 @@ impl ChallengeWsClient {
                                 write.send(ok_msg).await?;
                             }
 
-                            info!("✅ TDX attestation verified, connection encrypted");
+                            debug!("TDX attestation verified, connection encrypted");
                             break key_bytes;
                         }
                     }
@@ -340,7 +340,7 @@ impl ChallengeWsClient {
             // In admin mode (CHALLENGE_ADMIN=true), we request migrations
             // In non-admin mode, the challenge will return empty migrations
             if dev_mode {
-                info!("🔧 DEV MODE: Requesting migrations via plain text WebSocket");
+                debug!("DEV MODE: Requesting migrations via plain text WebSocket");
             } else {
                 info!(
                     "Requesting migrations via encrypted WebSocket (only if CHALLENGE_ADMIN=true)"
@@ -358,7 +358,7 @@ impl ChallengeWsClient {
                     let mut write = write_handle.lock().await;
                     let msg_str = serde_json::to_string(&request_msg)?;
                     write.send(Message::Text(msg_str)).await?;
-                    info!("🔧 DEV MODE: migrations_request sent (plain text), waiting for response...");
+                    debug!("DEV MODE: migrations_request sent (plain text), waiting for response...");
                 }
             } else {
                 // In production mode, encrypt the message
@@ -406,7 +406,7 @@ impl ChallengeWsClient {
                                 if let Message::Text(text) = msg {
                                     let plain_msg: PlainMessage = if dev_mode {
                                         // In dev mode, message is already plain text
-                                        info!("🔧 DEV MODE: Received plain text message in migrations wait loop");
+                                        debug!("DEV MODE: Received plain text message in migrations wait loop");
                                         match serde_json::from_str(&text) {
                                             Ok(pm) => pm,
                                             Err(e) => {
@@ -634,7 +634,7 @@ impl ChallengeWsClient {
                     let mut write = write_handle.lock().await;
                     let msg_str = serde_json::to_string(&orm_ready_msg)?;
                     write.send(Message::Text(msg_str)).await?;
-                    info!("🔧 DEV MODE: ✅ Sent orm_ready signal to challenge (plain text)");
+                    debug!("DEV MODE: Sent orm_ready signal to challenge (plain text)");
                 }
             } else {
                 // In production mode, encrypt the message
@@ -682,7 +682,7 @@ impl ChallengeWsClient {
                     match serde_json::from_str(&text) {
                         Ok(pm) => pm,
                         Err(e) => {
-                            warn!(error = %e, "🔧 DEV MODE: Failed to parse plain text message");
+                            debug!(error = %e, "DEV MODE: Failed to parse plain text message");
                             continue;
                         }
                     }

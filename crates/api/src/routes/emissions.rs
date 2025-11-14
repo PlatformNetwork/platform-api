@@ -10,10 +10,11 @@ use uuid::Uuid;
 use crate::state::AppState;
 use platform_api_models::{
     CalculateEmissionRequest, CalculateEmissionResponse, ChallengeEmissionMetrics,
-    CreateEmissionScheduleRequest, DistributeEmissionRequest, EmissionAggregate, EmissionReport,
-    EmissionSchedule, MinerEmissionMetrics, UpdateEmissionScheduleRequest,
-    ValidatorEmissionMetrics,
+    ChallengeEmissions, CreateEmissionScheduleRequest, DistributeEmissionRequest,
+    EmissionAggregate, EmissionReport, EmissionSchedule, MechanismEmissions, MinerEmissionMetrics,
+    SubnetEmissions, UpdateEmissionScheduleRequest, ValidatorEmissionMetrics,
 };
+use tracing::error;
 
 /// Create emissions router
 pub fn create_router() -> Router<AppState> {
@@ -42,6 +43,22 @@ pub fn create_router() -> Router<AppState> {
             get(get_miner_emission_metrics),
         )
         .route("/emissions/report", get(get_emission_report))
+        .route(
+            "/emissions/subnet/:netuid",
+            get(get_subnet_emissions),
+        )
+        .route(
+            "/emissions/subnet/:netuid/mechanisms",
+            get(get_subnet_mechanisms_emissions),
+        )
+        .route(
+            "/emissions/subnet/:netuid/mechanisms/:mechanism_id",
+            get(get_mechanism_emissions),
+        )
+        .route(
+            "/emissions/subnet/:netuid/challenges/:challenge_id",
+            get(get_challenge_emissions_from_subnet),
+        )
 }
 
 /// List emission schedules
@@ -220,4 +237,146 @@ pub struct GetEmissionAggregateParams {
 pub struct GetEmissionReportParams {
     pub period_start: chrono::DateTime<chrono::Utc>,
     pub period_end: chrono::DateTime<chrono::Utc>,
+}
+
+/// Get subnet emissions from blockchain
+pub async fn get_subnet_emissions(
+    State(state): State<AppState>,
+    Path(netuid): Path<u16>,
+) -> Result<Json<SubnetEmissions>, StatusCode> {
+    let bittensor = state
+        .bittensor
+        .as_ref()
+        .ok_or_else(|| {
+            error!("BittensorService not available");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    // Get challenge registry
+    let challenge_registry = state.challenge_registry.read().await;
+
+    // Calculate emissions
+    let emissions = bittensor
+        .calculate_subnet_emissions(&challenge_registry)
+        .await
+        .map_err(|e| {
+            error!("Failed to calculate subnet emissions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Verify netuid matches
+    if emissions.netuid != netuid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    Ok(Json(emissions))
+}
+
+/// Get all mechanisms emissions for a subnet
+pub async fn get_subnet_mechanisms_emissions(
+    State(state): State<AppState>,
+    Path(netuid): Path<u16>,
+) -> Result<Json<Vec<MechanismEmissions>>, StatusCode> {
+    let bittensor = state
+        .bittensor
+        .as_ref()
+        .ok_or_else(|| {
+            error!("BittensorService not available");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    // Get subnet emissions first
+    let challenge_registry = state.challenge_registry.read().await;
+    let subnet_emissions = bittensor
+        .calculate_subnet_emissions(&challenge_registry)
+        .await
+        .map_err(|e| {
+            error!("Failed to calculate subnet emissions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if subnet_emissions.netuid != netuid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Convert mechanism breakdowns to MechanismEmissions
+    let mechanisms: Vec<MechanismEmissions> = subnet_emissions
+        .mechanisms
+        .into_iter()
+        .map(|m| MechanismEmissions {
+            netuid,
+            mechanism_id: m.mechanism_id,
+            emission_percentage: m.emission_percentage,
+            daily_emissions_tao: m.daily_emissions_tao,
+            challenges: m.challenges,
+        })
+        .collect();
+
+    Ok(Json(mechanisms))
+}
+
+/// Get emissions for a specific mechanism
+pub async fn get_mechanism_emissions(
+    State(state): State<AppState>,
+    Path((netuid, mechanism_id)): Path<(u16, u8)>,
+) -> Result<Json<MechanismEmissions>, StatusCode> {
+    let bittensor = state
+        .bittensor
+        .as_ref()
+        .ok_or_else(|| {
+            error!("BittensorService not available");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    // Get challenge registry
+    let challenge_registry = state.challenge_registry.read().await;
+
+    // Calculate mechanism emissions
+    let emissions = bittensor
+        .calculate_mechanism_emissions(mechanism_id, &challenge_registry)
+        .await
+        .map_err(|e| {
+            error!("Failed to calculate mechanism emissions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Verify netuid matches
+    if emissions.netuid != netuid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    Ok(Json(emissions))
+}
+
+/// Get emissions for a specific challenge
+pub async fn get_challenge_emissions_from_subnet(
+    State(state): State<AppState>,
+    Path((netuid, challenge_id)): Path<(u16, Uuid)>,
+) -> Result<Json<ChallengeEmissions>, StatusCode> {
+    let bittensor = state
+        .bittensor
+        .as_ref()
+        .ok_or_else(|| {
+            error!("BittensorService not available");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    // Get challenge registry
+    let challenge_registry = state.challenge_registry.read().await;
+
+    // Calculate challenge emissions
+    let emissions = bittensor
+        .calculate_challenge_emissions(challenge_id, &challenge_registry)
+        .await
+        .map_err(|e| {
+            error!("Failed to calculate challenge emissions: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Verify netuid matches
+    if emissions.netuid != netuid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    Ok(Json(emissions))
 }

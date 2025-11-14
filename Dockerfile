@@ -14,8 +14,13 @@ RUN apt-get update && \
 
 WORKDIR /build
 
+# Copy bittensor-rs first (needed as a local dependency)
+# Copy to /build/bittensor-rs, then create symlink at ../bittensor-rs to match Cargo.toml path
+COPY bittensor-rs ./bittensor-rs
+RUN ln -s /build/bittensor-rs /bittensor-rs
+
 # Copy only Cargo files first
-COPY Cargo.toml Cargo.lock ./
+COPY platform-api/Cargo.toml platform-api/Cargo.lock ./
 
 # Create directory structure and copy Cargo.toml files
 RUN mkdir -p crates/api crates/storage crates/models \
@@ -24,15 +29,15 @@ RUN mkdir -p crates/api crates/storage crates/models \
              bins/platform-api-server
 
 # Copy each Cargo.toml individually (COPY doesn't work well with wildcards)
-COPY crates/api/Cargo.toml crates/api/
-COPY crates/storage/Cargo.toml crates/storage/
-COPY crates/models/Cargo.toml crates/models/
-COPY crates/scheduler/Cargo.toml crates/scheduler/
-COPY crates/builder/Cargo.toml crates/builder/
-COPY crates/attestation/Cargo.toml crates/attestation/
-COPY crates/kbs/Cargo.toml crates/kbs/
-COPY crates/autoscaler/Cargo.toml crates/autoscaler/
-COPY bins/platform-api-server/Cargo.toml bins/platform-api-server/
+COPY platform-api/crates/api/Cargo.toml crates/api/
+COPY platform-api/crates/storage/Cargo.toml crates/storage/
+COPY platform-api/crates/models/Cargo.toml crates/models/
+COPY platform-api/crates/scheduler/Cargo.toml crates/scheduler/
+COPY platform-api/crates/builder/Cargo.toml crates/builder/
+COPY platform-api/crates/attestation/Cargo.toml crates/attestation/
+COPY platform-api/crates/kbs/Cargo.toml crates/kbs/
+COPY platform-api/crates/autoscaler/Cargo.toml crates/autoscaler/
+COPY platform-api/bins/platform-api-server/Cargo.toml bins/platform-api-server/
 
 # Create dummy source files to build dependencies
 RUN mkdir -p bins/platform-api-server/src && \
@@ -50,7 +55,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin platform-api-server
 
 # Now copy the actual source code
-COPY . .
+COPY platform-api/ .
 
 # Touch all source files to ensure they're newer than the cached build
 RUN find . -name "*.rs" -exec touch {} \;
