@@ -19,7 +19,7 @@ A secure, high-performance API orchestrator for Platform Network that manages<br
 </div>
 
 > [!CAUTION]
-> The Platform Validator is currently in early development. Some features may be incomplete, APIs may change, and potential security vulnerabilities may exist. The team is actively testing to ensure everything is properly implemented and stable. Not ready for production use.
+> Platform API is currently in early development. Some features may be incomplete, APIs may change, and potential security vulnerabilities may exist. The team is actively testing to ensure everything is properly implemented and stable. Not ready for production use.
 
 
 

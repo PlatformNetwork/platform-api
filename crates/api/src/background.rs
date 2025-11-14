@@ -6,12 +6,12 @@ use serde_json::Value;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Start background task to sync challenges from PostgreSQL
 pub fn start_challenge_sync_task(state: Arc<AppState>) {
     tokio::spawn(async move {
-        info!("🚀 Starting challenge sync task - reading from PostgreSQL every 1 minute");
+        info!("Starting challenge sync task - reading from PostgreSQL every 1 minute");
 
         // Get existing database pool from AppState
         let pool = match &state.database_pool {
@@ -26,10 +26,10 @@ pub fn start_challenge_sync_task(state: Arc<AppState>) {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // Sync at startup - CRITICAL for initial load
-        info!("🔄 Initial sync: Loading challenges from database...");
+        info!("Initial sync: Loading challenges from database...");
         match sync_challenges_from_db(&state, &pool).await {
             Ok(_) => {
-                info!("✅ Initial sync completed successfully");
+                info!("Initial sync completed successfully");
 
                 // Verify registry is populated
                 let registry_size = {
@@ -37,12 +37,12 @@ pub fn start_challenge_sync_task(state: Arc<AppState>) {
                     reg.len()
                 };
                 info!(
-                    "📊 Registry now contains {} challenges after initial sync",
+                    "Registry now contains {} challenges after initial sync",
                     registry_size
                 );
             }
             Err(e) => {
-                error!("❌ Failed to sync challenges from DB at startup: {}", e);
+                error!("Failed to sync challenges from DB at startup: {}", e);
             }
         }
 
@@ -177,11 +177,11 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         };
 
         new_challenges.insert(row.compose_hash.clone(), challenge);
-        info!("✅ Added challenge '{}' to new_challenges map", row.name);
+        debug!("Added challenge '{}' to new_challenges map", row.name);
     }
 
     // Log all challenges found in database
-    info!("📊 Found {} challenges in database:", new_challenges.len());
+    debug!("Found {} challenges in database:", new_challenges.len());
     for (hash, challenge) in &new_challenges {
         info!(
             "  - {} (hash: {}) - version: {} - mechanism: {} - images: {:?}",
@@ -190,11 +190,11 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
     }
 
     // Update the challenge registry - ALWAYS FORCE UPDATE
-    info!("🔒 Acquiring write lock on registry...");
+    debug!("Acquiring write lock on registry...");
     let mut registry = state.challenge_registry.write().await;
     let registry_len_before = registry.len();
     info!(
-        "🔓 Write lock acquired, current size: {}",
+        "Write lock acquired, current size: {}",
         registry_len_before
     );
 
@@ -230,7 +230,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         // check if they're running and start them if not. For now, mark all as new/changed
         // during force-sync to ensure they're started.
         if new_or_changed.is_empty() {
-            info!("📋 No new challenges detected, but force-sync detected. Checking if challenges need to be started...");
+            debug!("No new challenges detected, but force-sync detected. Checking if challenges need to be started...");
             // Add all challenges to new_or_changed to ensure they're started
             for (hash, _) in &new_challenges {
                 new_or_changed.push(hash.clone());
@@ -238,27 +238,27 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         }
 
         info!(
-            "✅ Registry force-updated: now contains {} challenges (was {})",
+            "Registry force-updated: now contains {} challenges (was {})",
             registry.len(),
             registry_len_before
         );
 
         // Verify the update succeeded
         if registry.is_empty() && !new_challenges.is_empty() {
-            error!("⚠️ CRITICAL: Registry is still empty after update! This should not happen.");
+            error!("CRITICAL: Registry is still empty after update! This should not happen.");
         }
 
         // Log final registry contents
-        info!("📋 Final registry contents:");
+        debug!("Final registry contents:");
         for (hash, challenge) in registry.iter() {
-            info!("  ✓ {} (hash: {})", challenge.name, hash);
+            debug!("  {} (hash: {})", challenge.name, hash);
         }
     } else if registry.is_empty() {
-        warn!("⚠️ No challenges found in database AND registry is empty!");
+        warn!("No challenges found in database AND registry is empty!");
         warn!("   Make sure to run: docker exec -i platform-postgres-dev psql -U platform -d platform_dev < docker-init-db/02-insert-term-challenge.sql");
     } else {
         info!(
-            "📋 Registry unchanged, contains {} challenges",
+            "Registry unchanged, contains {} challenges",
             registry.len()
         );
     }
@@ -332,7 +332,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
                     Ok(_) => {
                         info!(
                             compose_hash = &compose_hash,
-                            "✅ Challenge auto-started successfully"
+                            "Challenge auto-started successfully"
                         );
                     }
                     Err(e) => {
@@ -381,7 +381,7 @@ pub fn start_metagraph_sync_task() {
         info!("🔄 Initial metagraph sync: Loading hotkeys from Bittensor chain...");
         refresh_metagraph_cache().await;
 
-        // Refresh every 60 seconds (matching METAGRAPH_CACHE_TTL_SEC from coding-benchmark)
+        // Refresh every 60 seconds (matching METAGRAPH_CACHE_TTL_SEC from terminal-challenge)
         let mut interval = interval(Duration::from_secs(60));
 
         loop {

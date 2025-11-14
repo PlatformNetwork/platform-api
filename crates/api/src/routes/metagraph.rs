@@ -30,7 +30,7 @@ pub fn create_router() -> Router<AppState> {
 /// Get list of valid hotkeys from metagraph cache
 ///
 /// Returns JSON with list of hotkeys in ss58 format.
-/// This endpoint is used by coding-benchmark to verify miner hotkeys.
+/// This endpoint is used by terminal-challenge to verify miner hotkeys.
 pub async fn get_metagraph_hotkeys(
     State(_state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {

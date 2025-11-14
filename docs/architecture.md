@@ -60,6 +60,22 @@ Job scheduling:
 - Validator assignment
 - Result collection
 
+### Autoscaler (`crates/autoscaler`)
+
+Automatic scaling of challenge instances:
+- Monitor challenge load
+- Scale CVM instances up/down
+- Resource optimization
+- Cost management
+
+### Models (`crates/models`)
+
+Shared data models and schemas:
+- Challenge specifications
+- Job definitions
+- Validator status
+- Result structures
+
 ## Architecture Diagram
 
 ```
@@ -87,7 +103,7 @@ Job scheduling:
 ## Security Features
 
 - TDX/SGX/SEV-SNP attestation verification
-- End-to-end encryption (ChaCha20Poly1305)
+- End-to-end encryption (ChaCha20-Poly1305 with X25519 key exchange)
 - Schema-based database isolation
 - Secure WebSocket connections
 - JWT-based authentication

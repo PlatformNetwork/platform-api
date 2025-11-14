@@ -26,7 +26,7 @@ Platform API implements multiple layers of security to ensure safe challenge exe
 
 ### End-to-End Encryption
 
-- ChaCha20Poly1305 AEAD encryption
+- ChaCha20-Poly1305 AEAD encryption
 - X25519 key exchange
 - HKDF key derivation
 
