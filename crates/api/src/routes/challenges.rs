@@ -353,11 +353,15 @@ pub async fn get_active_challenges(
         id: uuid::Uuid,
         name: String,
         compose_hash: String,
+        github_repo: Option<String>,
+        mechanism_id: i16,
+        emission_share: f64,
+        resources: JsonValue,
     }
 
     let rows = sqlx::query_as::<_, ChallengeRow>(
         r#"
-        SELECT id, name, compose_hash
+        SELECT id, name, compose_hash, github_repo, mechanism_id, emission_share, resources
         FROM challenges
         ORDER BY created_at DESC
         "#,
@@ -377,10 +381,15 @@ pub async fn get_active_challenges(
 
     Ok(Json(serde_json::json!({
         "challenges": rows.iter().map(|row| serde_json::json!({
-            "id": row.id,
-            "name": row.name,
-            "compose_hash": row.compose_hash,
+            "id": row.id.to_string(),
+            "name": row.name.clone(),
             "status": "Active", // All challenges in database are considered active
+            "github_repo": row.github_repo.clone().unwrap_or_default(),
+            "github_commit": "", // Not stored in DB, derived from compose_hash
+            "resource_requirements": row.resources.clone(),
+            "compose_hash": row.compose_hash.clone(),
+            "mechanism_id": row.mechanism_id as u8,
+            "emission_share": row.emission_share,
         })).collect::<Vec<_>>()
     })))
 }

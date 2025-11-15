@@ -29,8 +29,8 @@ Platform Network consists of several interconnected components that work togethe
 
 | Project | Repository | Description |
 |---------|-----------|-------------|
-| **Platform Validator** | [CortexLM/platform](https://github.com/CortexLM/platform) | Secure, high-performance validator built in Rust that executes challenges in TDX-secured VMs via dstack VMM. Manages job execution, challenge lifecycle, CVM provisioning, resource quota allocation, and result submission. Provides WebSocket connectivity to Platform API and challenge CVMs. |
-| **Challenge SDK** | [CortexLM/challenge](https://github.com/CortexLM/challenge) | Modern Python SDK for building verifiable challenges on Platform Network. Provides decorator-based lifecycle management, encrypted WebSocket communication with TDX attestation, automatic database migrations, custom weights calculation, and public API endpoints. |
+| **Platform Validator** | [PlatformNetwork/platform](https://github.com/PlatformNetwork/platform) | Secure, high-performance validator built in Rust that executes challenges in TDX-secured VMs via dstack VMM. Manages job execution, challenge lifecycle, CVM provisioning, resource quota allocation, and result submission. Provides WebSocket connectivity to Platform API and challenge CVMs. |
+| **Challenge SDK** | [PlatformNetwork/challenge](https://github.com/PlatformNetwork/challenge) | Modern Python SDK for building verifiable challenges on Platform Network. Provides decorator-based lifecycle management, encrypted WebSocket communication with TDX attestation, automatic database migrations, custom weights calculation, and public API endpoints. |
 
 
 ## Features
@@ -159,5 +159,5 @@ Made with love by the Cortex Foundation
 
 <!-- Repository links -->
 
-[repo_license_url]: https://github.com/CortexLM/platform-api/blob/main/LICENSE
+[repo_license_url]: https://github.com/PlatformNetwork/platform-api/blob/main/LICENSE
 [repo_license_img]: https://img.shields.io/badge/license-MIT-blue?style=for-the-badge&logo=none
