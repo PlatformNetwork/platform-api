@@ -105,13 +105,6 @@ impl SecureORMGateway {
         // Execute query
         let result = self.query_executor.execute(&query).await?;
 
-        info!(
-            operation = &query.operation,
-            table = &query.table,
-            row_count = result.rows.len(),
-            "Query executed successfully"
-        );
-
         Ok(result)
     }
 

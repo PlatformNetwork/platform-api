@@ -21,22 +21,23 @@ use serde_json::Value as JsonValue;
 /// Create jobs router
 pub fn create_router() -> Router<AppState> {
     Router::new()
-        .route("/jobs", post(create_job).get(list_jobs))
-        .route("/jobs/pending", get(get_pending_jobs))
-        .route("/jobs/claim", post(claim_job))
-        .route("/jobs/:id", get(get_job))
-        .route("/jobs/:id/claim", post(claim_specific_job))
-        .route("/jobs/:id/complete", post(complete_job))
-        .route("/jobs/:id/results", post(submit_results))
-        .route("/jobs/:id/fail", post(fail_job))
-        .route("/jobs/:id/progress", get(get_job_progress))
-        .route("/jobs/:id/test-results", get(get_job_test_results))
-        .route("/jobs/:id/current-test", get(get_current_test))
-        .route("/jobs/:id/logs", get(stream_logs))
-        .route("/jobs/:id/resource-usage", get(get_resource_usage))
-        .route("/jobs/next", get(get_next_job))
-        .route("/jobs/stats", get(get_job_stats))
-        .route("/challenge/create-job", post(create_job_from_challenge))
+        .route("/api/jobs", post(create_job).get(list_jobs))
+        .route("/api/jobs/pending", get(get_pending_jobs))
+        .route("/api/jobs/claim", post(claim_job))
+        .route("/api/jobs/:id", get(get_job))
+        .route("/api/jobs/:id/claim", post(claim_specific_job))
+        .route("/api/jobs/:id/complete", post(complete_job))
+        .route("/api/jobs/:id/results", post(submit_results))
+        .route("/api/jobs/:id/fail", post(fail_job))
+        .route("/api/jobs/:id/progress", get(get_job_progress))
+        .route("/api/jobs/:id/test-results", get(get_job_test_results))
+        .route("/api/jobs/:id/current-test", get(get_current_test))
+        .route("/api/jobs/:id/logs", get(stream_logs))
+        .route("/api/jobs/:id/resource-usage", get(get_resource_usage))
+        .route("/api/jobs/next", get(get_next_job))
+        .route("/api/jobs/stats", get(get_job_stats))
+        .route("/api/jobs/challenge/create-job", post(create_job_from_challenge))
+        .route("/challenge/create-job", post(create_job_from_challenge)) // Legacy route for backward compatibility
 }
 
 /// Create a new job
@@ -254,12 +255,61 @@ pub async fn get_pending_jobs(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Get payloads from database for each job to extract submission_id and miner_hotkey
+    let mut jobs_with_payloads = Vec::new();
+    
+    if let Some(pool) = &state.database_pool {
+        for job in &jobs.jobs {
+            // Query payload for this job (job.id is already a Uuid since Id = Uuid)
+            let payload_result: Option<serde_json::Value> = sqlx::query_scalar(
+                "SELECT payload FROM jobs WHERE id = $1"
+            )
+            .bind(job.id)
+            .fetch_optional(pool.as_ref())
+            .await
+            .ok()
+            .flatten();
+            
+            // Extract submission_id and miner_hotkey from payload
+            let submission_id = payload_result
+                .as_ref()
+                .and_then(|p| p.get("session_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| job.id.to_string()); // Fallback to job id
+            
+            let miner_hotkey = payload_result
+                .as_ref()
+                .and_then(|p| p.get("agent_hash"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string()); // Fallback to "unknown"
+            
+            jobs_with_payloads.push(serde_json::json!({
+                "id": job.id.to_string(),
+                "challenge_id": job.challenge_id.to_string(),
+                "submission_id": submission_id,
+                "miner_hotkey": miner_hotkey,
+                "status": format!("{:?}", job.status).to_lowercase(),
+                "created_at": job.created_at.to_rfc3339(),
+            }));
+        }
+    } else {
+        // Fallback: use job metadata without payload extraction
+        for job in &jobs.jobs {
+            jobs_with_payloads.push(serde_json::json!({
+                "id": job.id.to_string(),
+                "challenge_id": job.challenge_id.to_string(),
+                "submission_id": job.id.to_string(), // Use job id as fallback
+                "miner_hotkey": "unknown",
+                "status": format!("{:?}", job.status).to_lowercase(),
+                "created_at": job.created_at.to_rfc3339(),
+            }));
+        }
+    }
+
     Ok(Json(serde_json::json!({
-        "jobs": jobs.jobs.iter().map(|j| serde_json::json!({
-            "id": j.id,
-            "challenge_id": j.challenge_id,
-            "status": j.status,
-        })).collect::<Vec<_>>()
+        "jobs": jobs_with_payloads
     })))
 }
 
@@ -477,11 +527,37 @@ pub async fn create_job_from_challenge(
         _ => platform_api_models::JobPriority::Normal,
     });
 
+    // Resolve challenge_id: try UUID first, then lookup by name
+    let challenge_uuid = if let Ok(uuid) = Uuid::parse_str(&request.challenge_id) {
+        uuid
+    } else {
+        // Try to find challenge by name in database
+        if let Some(pool) = &state.database_pool {
+            let result: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM challenges WHERE name = $1 LIMIT 1"
+            )
+            .bind(&request.challenge_id)
+            .fetch_optional(pool.as_ref())
+            .await
+            .ok()
+            .flatten();
+            
+            match result {
+                Some(uuid) => uuid,
+                None => {
+                    tracing::error!("Challenge not found by name or UUID: {}", request.challenge_id);
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            }
+        } else {
+            tracing::error!("Database pool not available and challenge_id is not a UUID: {}", request.challenge_id);
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+
     // Create scheduler request
     let create_request = CreateJobRequest {
-        challenge_id: platform_api_models::Id::from(
-            Uuid::parse_str(&request.challenge_id).unwrap_or_else(|_| Uuid::new_v4()),
-        ),
+        challenge_id: platform_api_models::Id::from(challenge_uuid),
         payload: request.payload.clone(),
         priority,
         runtime: platform_api_models::RuntimeType::Docker,
@@ -501,63 +577,63 @@ pub async fn create_job_from_challenge(
 
     // Try to get challenge info and distribute job
     let challenge_id = request.challenge_id.clone();
-    if let Ok(challenge_uuid) = Uuid::parse_str(&challenge_id) {
-        // Try to get compose_hash from challenge registry
-        let compose_hash = state
-            .challenge_registry
-            .read()
-            .await
+    
+    // Try to get compose_hash from challenge registry (by UUID or by name)
+    let compose_hash = {
+        let registry = state.challenge_registry.read().await;
+        registry
             .values()
-            .find(|spec| spec.id == challenge_uuid)
+            .find(|spec| {
+                spec.id == challenge_uuid || spec.name == challenge_id
+            })
             .map(|spec| spec.compose_hash.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or_else(|| "unknown".to_string())
+    };
 
-        if compose_hash != "unknown" {
-            // Create job distributor
-            let distributor = JobDistributor::new(state.clone());
+    if compose_hash != "unknown" {
+        // Create job distributor
+        let distributor = JobDistributor::new(state.clone());
 
-            // Prepare distribution request
-            let distribute_request = DistributeJobRequest {
-                job_id: job.id.to_string(),
-                job_name: request.job_name.clone(),
-                payload: request.payload.clone(),
-                compose_hash,
-                challenge_id: challenge_id.clone(),
-                challenge_cvm_ws_url: None, // Could be enhanced to include the challenge's WebSocket URL
-            };
+        // Prepare distribution request
+        let distribute_request = DistributeJobRequest {
+            job_id: job.id.to_string(),
+            job_name: request.job_name.clone(),
+            payload: request.payload.clone(),
+            compose_hash,
+            challenge_id: challenge_id.clone(),
+            challenge_cvm_ws_url: None, // Could be enhanced to include the challenge's WebSocket URL
+        };
 
-            // Distribute job to validators
-            match distributor
-                .distribute_job_to_validators(distribute_request)
-                .await
-            {
-                Ok(response) => {
-                    tracing::info!(
-                        "Challenge {} created and distributed job {} to {} validators",
-                        challenge_id,
-                        job.id,
-                        response.assigned_validators.len()
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to distribute job {} from challenge {}: {}",
-                        job.id,
-                        challenge_id,
-                        e
-                    );
-                    // Don't fail the request, job is still created
-                }
+        // Distribute job to validators
+        match distributor
+            .distribute_job_to_validators(distribute_request)
+            .await
+        {
+            Ok(response) => {
+                tracing::info!(
+                    "Challenge {} created and distributed job {} to {} validators",
+                    challenge_id,
+                    job.id,
+                    response.assigned_validators.len()
+                );
             }
-        } else {
-            tracing::warn!(
-                "Could not find challenge {} to distribute job {}",
-                challenge_id,
-                job.id
-            );
+            Err(e) => {
+                tracing::error!(
+                    "Failed to distribute job {} from challenge {}: {}",
+                    job.id,
+                    challenge_id,
+                    e
+                );
+                // Don't fail the request, job is still created
+            }
         }
     } else {
-        tracing::warn!("Invalid challenge_id format: {}", challenge_id);
+        tracing::warn!(
+            "Could not find challenge {} (UUID: {}) to distribute job {}",
+            challenge_id,
+            challenge_uuid,
+            job.id
+        );
     }
 
     Ok(Json(job))

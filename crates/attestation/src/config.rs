@@ -82,12 +82,45 @@ impl TdxConfig {
 
     /// Get mode description for logging
     pub fn mode_description(&self) -> &'static str {
-        match (self.tee_enforced, self.dev_mode) {
-            (true, false) => "Production (TEE enforced)",
-            (false, true) => "Development (Mock attestation)",
-            (true, true) => "Mixed (TEE with dev fallback)",
-            (false, false) => "Development (TEE optional)",
+        let tdx_simulation = std::env::var("TDX_SIMULATION_MODE")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
+        
+        match (self.tee_enforced, self.dev_mode, tdx_simulation) {
+            (true, false, false) => "Production (TEE enforced)",
+            (false, true, true) => "Development (Enhanced TDX simulation)",
+            (false, true, false) => "Development (Mock attestation)",
+            (true, true, _) => "Mixed (TEE with dev fallback)",
+            (false, false, _) => "Development (TEE optional)",
+            (_, _, true) => "Development (TDX simulation mode)",
         }
+    }
+
+    /// Check if TDX simulation mode is enabled
+    pub fn is_tdx_simulation_mode(&self) -> bool {
+        std::env::var("TDX_SIMULATION_MODE")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true"
+    }
+
+    /// Check if encryption should be enabled (always true)
+    pub fn dev_mode_encryption_enabled(&self) -> bool {
+        true // Encryption is always enabled
+    }
+
+    /// Get TDX mock level (full, basic, or error-injection)
+    pub fn tdx_mock_level(&self) -> String {
+        std::env::var("TDX_MOCK_LEVEL")
+            .unwrap_or_else(|_| {
+                if self.is_tdx_simulation_mode() {
+                    "full".to_string()
+                } else {
+                    "basic".to_string()
+                }
+            })
+            .to_lowercase()
     }
 }
 

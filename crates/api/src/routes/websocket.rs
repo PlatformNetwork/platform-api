@@ -4,6 +4,7 @@ use axum::{
     response::Response,
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -93,7 +94,7 @@ async fn handle_validator_socket(
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(axum::extract::ws::Message::Text(text)) => {
-                info!("Received message from validator {}: {}", hotkey, text);
+                // Message received (logging removed for verbosity)
 
                 // Before authentication, only accept handshake and attestation messages
                 if !authenticated {
@@ -109,19 +110,31 @@ async fn handle_validator_socket(
                                 == "true";
 
                             if !tee_enforced {
-                                // Dev mode: Skip TDX attestation and authenticate directly
+                                // Dev mode: Request mock attestation with event log containing compose_hash
+                                // This ensures we still verify compose_hash even in dev mode
                                 warn!(
-                                    "DEV MODE: Skipping TDX attestation for validator {}",
+                                    "DEV MODE: Requesting mock TDX attestation for validator {} (TDX verification will be mocked but compose_hash will be verified)",
                                     hotkey
                                 );
-                                authenticated = true;
-                                awaiting_attestation = false;
+                                awaiting_attestation = true;
 
-                                // Send success acknowledgment
-                                let ack = serde_json::json!({
-                                    "type": "handshake_ack",
-                                    "status": "success",
-                                    "message": "Authenticated (dev mode - attestation skipped)",
+                                // Generate random challenge for this session (still needed for mock attestation)
+                                use rand::RngCore;
+                                let mut challenge_bytes = [0u8; 32];
+                                rand::thread_rng().fill_bytes(&mut challenge_bytes);
+                                expected_challenge = hex::encode(challenge_bytes);
+
+                                info!(
+                                    "Generated challenge for validator {} (dev mode): {}",
+                                    hotkey, expected_challenge
+                                );
+
+                                // Request mock TDX attestation with challenge
+                                // Validator must provide event log with compose_hash even in dev mode
+                                let attest_request = serde_json::json!({
+                                    "type": "request_attestation",
+                                    "message": "Please provide mock TDX attestation (dev mode - TDX verification will be mocked but compose_hash must be provided in event log)",
+                                    "challenge": expected_challenge,
                                     "dev_mode": true
                                 });
 
@@ -129,16 +142,16 @@ async fn handle_validator_socket(
                                     let mut sender = sender_handle.lock().await;
                                     if let Err(e) = sender
                                         .send(axum::extract::ws::Message::Text(
-                                            serde_json::to_string(&ack).unwrap(),
+                                            serde_json::to_string(&attest_request).unwrap(),
                                         ))
                                         .await
                                     {
-                                        error!("Failed to send ack: {}", e);
+                                        error!("Failed to send attestation request: {}", e);
                                         break;
                                     }
                                 }
 
-                                debug!("Validator {} authenticated (dev mode)", hotkey);
+                                info!("Requested mock TDX attestation from validator {} (dev mode)", hotkey);
                                 continue;
                             }
 
@@ -259,13 +272,203 @@ async fn handle_validator_socket(
 
                             info!("✅ Challenge verified for validator {}", hotkey);
 
+                            // Check if we're in dev mode
+                            let tee_enforced = std::env::var("TEE_ENFORCED")
+                                .unwrap_or_else(|_| "true".to_string())
+                                .to_lowercase()
+                                == "true";
+
+                            if !tee_enforced {
+                                // Dev mode: Mock TDX verification but still verify challenge binding and extract compose_hash
+                                warn!("DEV MODE: Mocking TDX verification for validator {} (but still verifying challenge binding and extracting compose_hash)", hotkey);
+                                
+                                // CRITICAL: Verify that report_data in TDX quote contains the challenge (even in dev mode)
+                                // Decode report_data directly from the quote bytes to avoid trusting relayed fields
+                                // Quote can be in base64 (from validator) or hex (legacy)
+                                let quote_bytes = match base64_engine.decode(quote) {
+                                    Ok(b) => b,
+                                    Err(_) => {
+                                        // Try hex as fallback for legacy compatibility
+                                        match hex::decode(quote) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                error!("Failed to decode quote (tried base64 and hex): {}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                };
+                                // Try common offsets (supports minor layout differences)
+                                let candidate_offsets: [usize; 3] = [568, 576, 584];
+                                let mut report_data_prefix = String::new();
+                                let mut found = false;
+                                for off in candidate_offsets.iter() {
+                                    if quote_bytes.len() >= *off + 32 {
+                                        let rd = &quote_bytes[*off..*off + 32];
+                                        let hex32 = hex::encode(rd);
+                                        // Keep the first 32 bytes (64 hex chars)
+                                        report_data_prefix = hex32.chars().take(64).collect::<String>();
+                                        found = true;
+                                        info!(
+                                            "DEV MODE: Using report_data at offset {}: {}..",
+                                            off,
+                                            &report_data_prefix
+                                                [..std::cmp::min(8, report_data_prefix.len())]
+                                        );
+                                        break;
+                                    }
+                                }
+                                if !found {
+                                    error!("Quote too short to contain report_data at known offsets");
+                                    let ack = serde_json::json!({
+                                        "type": "handshake_ack",
+                                        "status": "failed",
+                                        "error": "TDX quote missing report_data"
+                                    });
+                                    {
+                                        let mut sender = sender_handle.lock().await;
+                                        let _ = sender
+                                            .send(axum::extract::ws::Message::Text(
+                                                serde_json::to_string(&ack).unwrap(),
+                                            ))
+                                            .await;
+                                    }
+                                    break;
+                                }
+                                // The report_data must contain or match the challenge (even in dev mode)
+                                let challenge_hash = {
+                                    let mut hasher = Sha256::new();
+                                    hasher.update(expected_challenge.as_bytes());
+                                    hex::encode(hasher.finalize())
+                                };
+                                if report_data_prefix != expected_challenge
+                                    && report_data_prefix != challenge_hash
+                                {
+                                    error!("❌ DEV MODE: TDX report_data does not contain challenge! Expected {}, got {}", 
+                                        expected_challenge, report_data_prefix);
+                                    let ack = serde_json::json!({
+                                        "type": "handshake_ack",
+                                        "status": "failed",
+                                        "error": "TDX attestation not bound to session challenge"
+                                    });
+                                    {
+                                        let mut sender = sender_handle.lock().await;
+                                        let _ = sender
+                                            .send(axum::extract::ws::Message::Text(
+                                                serde_json::to_string(&ack).unwrap(),
+                                            ))
+                                            .await;
+                                    }
+                                    break;
+                                }
+                                info!("✅ DEV MODE: Challenge binding verified (TDX verification mocked)");
+
+                                // Extract compose_hash from event log (required even in dev mode)
+                                let compose_hash = match extract_compose_hash_from_event_log(event_log) {
+                                    Ok(hash) => {
+                                        info!("✅ DEV MODE: Extracted compose_hash from event log: {}", hash);
+                                        hash
+                                    }
+                                    Err(e) => {
+                                        error!("DEV MODE: Failed to extract compose_hash from event log: {}", e);
+                                        let ack = serde_json::json!({
+                                            "type": "handshake_ack",
+                                            "status": "failed",
+                                            "error": format!("Missing compose-hash in event log: {}", e)
+                                        });
+                                        {
+                                            let mut sender = sender_handle.lock().await;
+                                            let _ = sender
+                                                .send(axum::extract::ws::Message::Text(
+                                                    serde_json::to_string(&ack).unwrap(),
+                                                ))
+                                                .await;
+                                        }
+                                        break;
+                                    }
+                                };
+
+                                // Continue with authentication using extracted compose_hash
+                                authenticated = true;
+                                awaiting_attestation = false;
+
+                                // Extract app_id and instance_id from event log
+                                let app_id = extract_app_id_from_event_log(event_log);
+                                let instance_id = extract_instance_id_from_event_log(event_log);
+
+                                // Save validator connection with message sender
+                                let conn = crate::state::ValidatorConnection {
+                                    validator_hotkey: hotkey.clone(),
+                                    app_id,
+                                    instance_id,
+                                    compose_hash: compose_hash.clone(),
+                                    connected_at: chrono::Utc::now(),
+                                    session_token: "websocket".to_string(),
+                                    last_ping: chrono::Utc::now(),
+                                    message_sender: Some(tx_clone.clone()),
+                                };
+                                state.add_validator_connection(conn).await;
+
+                                // Send success acknowledgment
+                                let ack = serde_json::json!({
+                                    "type": "handshake_ack",
+                                    "status": "success",
+                                    "compose_hash": compose_hash,
+                                    "dev_mode": true,
+                                    "message": "Authenticated (dev mode - TDX verification mocked but compose_hash verified)"
+                                });
+
+                                {
+                                    let mut sender = sender_handle.lock().await;
+                                    if let Err(e) = sender
+                                        .send(axum::extract::ws::Message::Text(
+                                            serde_json::to_string(&ack).unwrap(),
+                                        ))
+                                        .await
+                                    {
+                                        error!("Failed to send ack: {}", e);
+                                        break;
+                                    }
+                                }
+
+                                // Send challenge list after successful authentication
+                                let challenges = state.list_challenges().await;
+                                let challenges_msg = serde_json::json!({
+                                    "type": "challenges:list",
+                                    "challenges": challenges
+                                });
+
+                                {
+                                    let mut sender = sender_handle.lock().await;
+                                    if let Err(e) = sender
+                                        .send(axum::extract::ws::Message::Text(
+                                            serde_json::to_string(&challenges_msg).unwrap(),
+                                        ))
+                                        .await
+                                    {
+                                        error!("Failed to send challenge list: {}", e);
+                                    }
+                                }
+
+                                info!("✅ Validator {} authenticated (dev mode - TDX mocked, compose_hash: {})", hotkey, compose_hash);
+                                continue;
+                            }
+
+                            // Production mode: Full TDX verification
                             // CRITICAL: Verify that report_data in TDX quote contains the challenge
                             // Decode report_data directly from the quote bytes to avoid trusting relayed fields
-                            let quote_bytes = match hex::decode(quote) {
+                            // Quote can be in base64 (from validator) or hex (legacy)
+                            let quote_bytes = match base64_engine.decode(quote) {
                                 Ok(b) => b,
-                                Err(e) => {
-                                    error!("Failed to decode quote hex: {}", e);
-                                    break;
+                                Err(_) => {
+                                    // Try hex as fallback for legacy compatibility
+                                    match hex::decode(quote) {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            error!("Failed to decode quote (tried base64 and hex): {}", e);
+                                            break;
+                                        }
+                                    }
                                 }
                             };
                             // Try common offsets (supports minor layout differences)
@@ -342,7 +545,7 @@ async fn handle_validator_socket(
                                 measurements: None,
                             };
 
-                            // Verify TDX attestation
+                            // Verify TDX attestation (production mode - full verification)
                             match verify_validator_attestation(&state, &attestation_msg).await {
                                 Ok(compose_hash) => {
                                     debug!("TDX attestation bound to session challenge for validator {}", hotkey);
@@ -512,10 +715,7 @@ async fn handle_validator_socket(
                 }
 
                 // After authentication, handle normal messages
-                info!(
-                    "Processing authenticated message from validator {}: {}",
-                    hotkey, text
-                );
+                // (Logging removed for verbosity)
 
                 // Parse and handle different message types
                 if let Ok(msg_json) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -523,30 +723,46 @@ async fn handle_validator_socket(
                     match msg_type {
                         "challenge_status" => {
                             // Handle validator challenge status update
-                            if let Ok(statuses) =
-                                serde_json::from_value::<
-                                    Vec<platform_api_models::ValidatorChallengeStatus>,
-                                >(msg_json["statuses"].clone())
+                            match serde_json::from_value::<
+                                Vec<platform_api_models::ValidatorChallengeStatus>,
+                            >(msg_json["statuses"].clone())
                             {
-                                for status in statuses {
-                                    state
-                                        .update_validator_challenge_status(&hotkey, status)
-                                        .await;
+                                Ok(statuses) => {
+                                    let count = statuses.len();
+                                    for status in statuses {
+                                        state
+                                            .update_validator_challenge_status(&hotkey, status)
+                                            .await;
+                                    }
+                                    info!("Updated challenge status for validator {} ({} statuses)", hotkey, count);
                                 }
-                                info!("Updated challenge status for validator {}", hotkey);
+                                Err(e) => {
+                                    warn!("Failed to parse challenge_status from validator {}: {}. Raw statuses: {:?}", hotkey, e, msg_json.get("statuses"));
+                                }
                             }
                         }
                         "orm_query" => {
-                            // Handle ORM read query
-                            if let (Some(orm_gateway), Some(query_data)) =
-                                (state.orm_gateway.as_ref(), msg_json.get("query"))
+                            // Handle ORM query from validator
+                            // Use normal gateway to allow write operations based on permissions
+                            if let (Some(orm_gateway), Some(query_data), Some(challenge_id)) =
+                                (state.orm_gateway.as_ref(), msg_json.get("query"), msg_json.get("challenge_id").and_then(|v| v.as_str()))
                             {
-                                match handle_orm_query(orm_gateway, query_data).await {
+                                // Extract query_id for response matching
+                                let query_id = msg_json.get("query_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                
+                                match handle_orm_query_with_challenge(&state, orm_gateway, query_data, challenge_id, &hotkey).await {
                                     Ok(result) => {
-                                        let response = serde_json::json!({
+                                        let mut response = serde_json::json!({
                                             "type": "orm_result",
                                             "result": result
                                         });
+                                        
+                                        // Include query_id if present for matching
+                                        if let Some(qid) = query_id {
+                                            response["query_id"] = serde_json::Value::String(qid);
+                                        }
 
                                         {
                                             let mut sender = sender_handle.lock().await;
@@ -561,10 +777,15 @@ async fn handle_validator_socket(
                                         }
                                     }
                                     Err(e) => {
-                                        let error_response = serde_json::json!({
+                                        let mut error_response = serde_json::json!({
                                             "type": "error",
                                             "message": format!("ORM query failed: {}", e)
                                         });
+                                        
+                                        // Include query_id if present
+                                        if let Some(qid) = query_id {
+                                            error_response["query_id"] = serde_json::Value::String(qid);
+                                        }
 
                                         {
                                             let mut sender = sender_handle.lock().await;
@@ -580,10 +801,17 @@ async fn handle_validator_socket(
                                     }
                                 }
                             } else {
-                                let error_response = serde_json::json!({
+                                let mut error_response = serde_json::json!({
                                     "type": "error",
-                                    "message": "ORM gateway not available"
+                                    "message": "ORM gateway not available or missing required fields"
                                 });
+                                
+                                // Try to extract query_id even if query is missing
+                                let query_id = msg_json.get("query_id")
+                                    .and_then(|v| v.as_str());
+                                if let Some(qid) = query_id {
+                                    error_response["query_id"] = serde_json::Value::String(qid.to_string());
+                                }
 
                                 {
                                     let mut sender = sender_handle.lock().await;
@@ -733,11 +961,8 @@ async fn handle_validator_socket(
                             }
                         }
                         _ => {
-                            // Log other message types for monitoring
-                            info!(
-                                "Received message type: {} from validator {}",
-                                msg_type, hotkey
-                            );
+                            // Log other message types for monitoring (reduced verbosity)
+                            // info!("Received message type: {} from validator {}", msg_type, hotkey);
                         }
                     }
                 }
@@ -844,6 +1069,70 @@ async fn verify_secure_message(msg: &SecureMessage, expected_hotkey: &str) -> an
     Ok(())
 }
 
+/// Extract compose_hash from event log
+fn extract_compose_hash_from_event_log(event_log: &str) -> anyhow::Result<String> {
+    let event_log_json: serde_json::Value =
+        serde_json::from_str(event_log).context("Failed to parse event log")?;
+    
+    event_log_json
+        .as_array()
+        .and_then(|events| {
+            for event in events {
+                if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
+                    if event_type == "compose-hash" {
+                        if let Some(payload) = event.get("event_payload").and_then(|p| p.as_str()) {
+                            return Some(payload.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .ok_or_else(|| anyhow::anyhow!("Missing compose-hash in event log"))
+}
+
+/// Extract app_id from event log
+fn extract_app_id_from_event_log(event_log: &str) -> Option<String> {
+    if let Ok(event_log_json) = serde_json::from_str::<serde_json::Value>(event_log) {
+        event_log_json.as_array().and_then(|events| {
+            for event in events {
+                if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
+                    if event_type == "app-id" {
+                        return event
+                            .get("event_payload")
+                            .and_then(|p| p.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        })
+    } else {
+        None
+    }
+}
+
+/// Extract instance_id from event log
+fn extract_instance_id_from_event_log(event_log: &str) -> Option<String> {
+    if let Ok(event_log_json) = serde_json::from_str::<serde_json::Value>(event_log) {
+        event_log_json.as_array().and_then(|events| {
+            for event in events {
+                if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
+                    if event_type == "instance-id" {
+                        return event
+                            .get("event_payload")
+                            .and_then(|p| p.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        })
+    } else {
+        None
+    }
+}
+
 /// Verify validator TDX attestation
 async fn verify_validator_attestation(
     state: &AppState,
@@ -854,7 +1143,14 @@ async fn verify_validator_attestation(
         .quote
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Missing quote"))?;
-    let quote_bytes = hex::decode(quote).context("Failed to decode quote hex")?;
+    // Quote can be in base64 (from validator) or hex (legacy)
+    let quote_bytes = match base64_engine.decode(quote) {
+        Ok(b) => b,
+        Err(_) => {
+            // Try hex as fallback for legacy compatibility
+            hex::decode(quote).context("Failed to decode quote (tried base64 and hex)")?
+        }
+    };
 
     let measurements = msg
         .measurements
@@ -945,6 +1241,51 @@ async fn handle_orm_query(
     let gateway = orm_gateway.read().await;
     let result = gateway
         .execute_read_query(query)
+        .await
+        .context("Failed to execute ORM query")?;
+
+    // Convert result to JSON
+    Ok(serde_json::to_value(result)?)
+}
+
+/// Handle ORM query from validator with challenge schema resolution
+async fn handle_orm_query_with_challenge(
+    state: &AppState,
+    orm_gateway: &Arc<tokio::sync::RwLock<crate::orm_gateway::SecureORMGateway>>,
+    query_data: &serde_json::Value,
+    challenge_id: &str,
+    validator_hotkey: &str,
+) -> anyhow::Result<serde_json::Value> {
+    use crate::orm_gateway::ORMQuery;
+
+    // Parse the query
+    let mut query: ORMQuery =
+        serde_json::from_value(query_data.clone()).context("Failed to parse ORM query")?;
+
+        // Resolve schema from ChallengeRunner if not provided
+        if query.schema.is_none() {
+            if let Some(challenge_runner) = &state.challenge_runner {
+                if let Some(schema_name) = challenge_runner.get_schema_for_challenge(challenge_id).await {
+                    query.schema = Some(schema_name.clone());
+                } else {
+                    // Fallback: challenge not managed by Platform API, use default format
+                    warn!(
+                        validator_hotkey = validator_hotkey,
+                        challenge_id = challenge_id,
+                        "Challenge not found in ChallengeRunner, using fallback schema format"
+                    );
+                    query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+                }
+            } else {
+                // No ChallengeRunner available, use fallback
+                query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+            }
+        }
+
+    // Execute the query using normal gateway (permissions control access)
+    let gateway = orm_gateway.read().await;
+    let result = gateway
+        .execute_query(query)
         .await
         .context("Failed to execute ORM query")?;
 

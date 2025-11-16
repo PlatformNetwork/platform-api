@@ -75,8 +75,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:testing-slim AS runtime
 
 # Install runtime dependencies
+# postgresql-client provides psql for executing migrations
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 libgit2-1.9 curl && \
+    ca-certificates libssl3 libgit2-1.9 curl postgresql-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

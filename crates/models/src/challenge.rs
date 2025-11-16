@@ -225,11 +225,15 @@ pub struct ChallengePort {
 
 /// Validator challenge status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "PascalCase")]
 pub enum ValidatorChallengeState {
     Active,
     Inactive,
     Failed,
     Provisioning,
+    Created,    // Challenge created but not yet active
+    Probing,    // Challenge is being probed for health
+    Recycling,  // Challenge is being recycled
 }
 
 /// Validator challenge status

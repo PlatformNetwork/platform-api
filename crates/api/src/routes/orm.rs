@@ -23,6 +23,8 @@ pub fn create_router() -> Router<AppState> {
 
 /// Execute ORM query (read-only for validator)
 /// Validator hotkey must be in header X-Validator-Hotkey
+/// DEPRECATED: Use WebSocket for ORM queries instead of HTTP
+#[deprecated(note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility")]
 async fn execute_orm_query(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -30,6 +32,11 @@ async fn execute_orm_query(
 ) -> Result<Json<Value>, StatusCode> {
     // Get validator hotkey from header
     let validator_hotkey = extract_validator_hotkey(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    
+    warn!(
+        validator_hotkey = &validator_hotkey,
+        "DEPRECATED: ORM query via HTTP - please use WebSocket connection instead"
+    );
 
     info!(
         validator_hotkey = &validator_hotkey,
@@ -67,6 +74,8 @@ async fn execute_orm_query(
 }
 
 /// Execute ORM query for a specific challenge (read-only for validator)
+/// DEPRECATED: Use WebSocket for ORM queries instead of HTTP
+#[deprecated(note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility")]
 async fn execute_orm_query_with_challenge(
     State(state): State<AppState>,
     Path(challenge_id): Path<String>,
@@ -75,10 +84,36 @@ async fn execute_orm_query_with_challenge(
 ) -> Result<Json<Value>, StatusCode> {
     // Get validator hotkey from header
     let validator_hotkey = extract_validator_hotkey(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    
+    warn!(
+        validator_hotkey = &validator_hotkey,
+        challenge_id = &challenge_id,
+        "DEPRECATED: ORM query via HTTP - please use WebSocket connection instead"
+    );
 
-    // Set schema automatically
+    // Resolve schema from ChallengeRunner if available (Platform API managed challenges)
     if query.schema.is_none() {
-        query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+        if let Some(challenge_runner) = &state.challenge_runner {
+            if let Some(schema_name) = challenge_runner.get_schema_for_challenge(&challenge_id).await {
+                query.schema = Some(schema_name);
+                info!(
+                    challenge_id = &challenge_id,
+                    schema = &query.schema.as_ref().unwrap(),
+                    "Resolved schema from ChallengeRunner"
+                );
+            } else {
+                // Fallback: challenge not managed by Platform API, use default format
+                // This handles validator-managed challenges that aren't in ChallengeRunner
+                warn!(
+                    challenge_id = &challenge_id,
+                    "Challenge not found in ChallengeRunner, using fallback schema format"
+                );
+                query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+            }
+        } else {
+            // No ChallengeRunner available, use fallback
+            query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+        }
     }
 
     info!(

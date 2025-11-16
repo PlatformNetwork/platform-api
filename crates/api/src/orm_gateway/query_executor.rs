@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use sqlx::{Column, PgPool, Row, TypeInfo};
+use std::str::FromStr;
 use std::time::Instant;
 use tracing::info;
+use chrono::{DateTime, NaiveDateTime, Utc};
 
 use super::{ColumnValue, ORMQuery, QueryFilter, QueryResult};
 
@@ -392,7 +394,7 @@ impl QueryExecutor {
         // Create a dynamic query
         let mut query = sqlx::query(sql);
 
-        // Bind values
+        // Bind values with automatic timestamp conversion
         for value in bind_values {
             query = match value {
                 serde_json::Value::Null => query.bind(None::<String>),
@@ -406,7 +408,76 @@ impl QueryExecutor {
                         return Err(anyhow::anyhow!("Unsupported number type"));
                     }
                 }
-                serde_json::Value::String(s) => query.bind(s),
+                serde_json::Value::String(s) => {
+                    // First check if it's a JSON string (starts with { or [)
+                    // This handles cases where Python's json.dumps() sends JSON as a string
+                    // but PostgreSQL expects JSONB
+                    let trimmed = s.trim();
+                    if (trimmed.starts_with('{') && trimmed.ends_with('}')) 
+                        || (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+                        // Try to parse as JSON
+                        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&s) {
+                            // Successfully parsed as JSON, bind as JSONB
+                            query.bind::<serde_json::Value>(json_value)
+                        } else {
+                            // Not valid JSON, continue with other checks
+                            // Try to parse as ISO timestamp
+                            if s.len() >= 19 && (s.contains('T') || s.contains(' ')) {
+                                // First try NaiveDateTime (for timestamp without time zone columns)
+                                if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
+                                    query.bind(ndt)
+                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
+                                    query.bind(ndt)
+                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                                    query.bind(ndt)
+                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                                    query.bind(ndt)
+                                } else if s.ends_with('Z') || s.contains('+') || (s.matches('-').count() >= 4 && s.contains('T')) {
+                                    // Has timezone indicator, try DateTime<Utc>
+                                    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+                                        query.bind(dt.with_timezone(&Utc))
+                                    } else if let Ok(dt) = DateTime::<Utc>::from_str(&s) {
+                                        query.bind(dt)
+                                    } else {
+                                        query.bind(s)
+                                    }
+                                } else {
+                                    query.bind(s)
+                                }
+                            } else {
+                                query.bind(s)
+                            }
+                        }
+                    } else {
+                        // Doesn't look like JSON, try to parse as ISO timestamp
+                        if s.len() >= 19 && (s.contains('T') || s.contains(' ')) {
+                            // First try NaiveDateTime (for timestamp without time zone columns)
+                            if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
+                                query.bind(ndt)
+                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
+                                query.bind(ndt)
+                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                                query.bind(ndt)
+                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                                query.bind(ndt)
+                            } else if s.ends_with('Z') || s.contains('+') || (s.matches('-').count() >= 4 && s.contains('T')) {
+                                // Has timezone indicator, try DateTime<Utc>
+                                if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+                                    query.bind(dt.with_timezone(&Utc))
+                                } else if let Ok(dt) = DateTime::<Utc>::from_str(&s) {
+                                    query.bind(dt)
+                                } else {
+                                    query.bind(s)
+                                }
+                            } else {
+                                query.bind(s)
+                            }
+                        } else {
+                            // Doesn't look like a timestamp, bind as string
+                            query.bind(s)
+                        }
+                    }
+                }
                 // Object and Array can be bound directly as JSONB
                 serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
                     query.bind::<serde_json::Value>(value)

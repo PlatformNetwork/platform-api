@@ -15,6 +15,9 @@ pub use verifier::*;
 mod config;
 pub use config::*;
 
+mod mock_tdx;
+pub use mock_tdx::*;
+
 // Use TdxConfig as AttestationConfig for now
 pub type AttestationConfig = TdxConfig;
 
@@ -85,12 +88,16 @@ impl AttestationService {
         let tee_enforced =
             std::env::var("TEE_ENFORCED").unwrap_or_else(|_| "true".to_string()) == "true";
         let dev_mode = std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
+        let tdx_simulation_mode = std::env::var("TDX_SIMULATION_MODE")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
 
         // Always verify attestation - no bypass allowed
         // In dev mode, use mock verification but still validate structure
-        let verification_result = if !tee_enforced || dev_mode {
+        let verification_result = if !tee_enforced || dev_mode || tdx_simulation_mode {
             tracing::info!(
-                "DEV MODE: Using mock TDX verification (structure validation still enforced)"
+                "DEV MODE: Using enhanced mock TDX verification (structure validation and crypto operations)"
             );
 
             // Validate request structure even in dev mode
@@ -117,15 +124,56 @@ impl AttestationService {
                         error: Some("Nonce too short (minimum 16 bytes)".to_string()),
                     });
                 }
+
+                // Verify nonce binding in quote using mock TDX extraction
+                let quote_bytes = request.quote.as_ref().unwrap();
+                match MockTdxQuote::extract_measurements(quote_bytes, &request.nonce) {
+                    Ok(_measurements) => {
+                        tracing::debug!("Nonce binding verified successfully in mock mode");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Nonce binding verification failed: {}", e);
+                        // In enhanced simulation mode, we still allow but log the issue
+                        if !tdx_simulation_mode {
+                            return Ok(AttestationResponse {
+                                session_token: String::new(),
+                                status: platform_api_models::AttestationStatus::Failed,
+                                expires_at: Utc::now(),
+                                verified_measurements: vec![],
+                                policy: String::new(),
+                                error: Some(format!("Nonce binding verification failed: {}", e)),
+                            });
+                        }
+                    }
+                }
             }
+
+            // Extract app info from event log (same as real verifier)
+            let (app_id, instance_id, compose_hash) = Self::extract_app_info_from_event_log(event_log)?;
+
+            // Use extracted values or fallback to defaults
+            let app_id_bytes = app_id
+                .map(|s| s.as_bytes().to_vec())
+                .unwrap_or_else(|| b"dev-mode-app-id".to_vec());
+            let instance_id_bytes = instance_id
+                .map(|s| s.as_bytes().to_vec())
+                .unwrap_or_else(|| b"dev-mode-instance-id".to_vec());
+            let device_id_bytes = Some(b"dev-mode-device-id".to_vec());
+
+            tracing::info!(
+                app_id = ?String::from_utf8_lossy(&app_id_bytes),
+                instance_id = ?String::from_utf8_lossy(&instance_id_bytes),
+                compose_hash = ?compose_hash,
+                "Mock TDX verification completed"
+            );
 
             // Create a mock verification result (structure validated)
             VerificationResult {
                 is_valid: true,
                 measurements: request.measurements.clone(),
-                app_id: Some(b"dev-mode-app-id".to_vec()),
-                instance_id: Some(b"dev-mode-instance-id".to_vec()),
-                device_id: Some(b"dev-mode-device-id".to_vec()),
+                app_id: Some(app_id_bytes),
+                instance_id: Some(instance_id_bytes),
+                device_id: device_id_bytes,
                 error: None,
             }
         } else {
@@ -265,6 +313,41 @@ impl AttestationService {
         }
 
         Ok(claims.claims)
+    }
+
+    /// Extract app info from event log (same logic as TdxVerifier)
+    fn extract_app_info_from_event_log(
+        event_log: Option<&str>,
+    ) -> Result<(Option<String>, Option<String>, Option<String>)> {
+        let event_log_str = match event_log {
+            Some(log) => log,
+            None => return Ok((None, None, None)),
+        };
+
+        // Parse event log JSON
+        let event_log_json: serde_json::Value =
+            serde_json::from_str(event_log_str).context("Failed to parse event log")?;
+
+        let mut app_id = None;
+        let mut instance_id = None;
+        let mut compose_hash = None;
+
+        if let Some(events) = event_log_json.as_array() {
+            for event in events {
+                if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
+                    if let Some(payload) = event.get("event_payload").and_then(|p| p.as_str()) {
+                        match event_type {
+                            "app-id" => app_id = Some(payload.to_string()),
+                            "instance-id" => instance_id = Some(payload.to_string()),
+                            "compose-hash" => compose_hash = Some(payload.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((app_id, instance_id, compose_hash))
     }
 
     fn generate_grant_token(

@@ -68,6 +68,10 @@ impl QueryValidator {
             }
 
             for column in columns {
+                // Allow "*" as a special case for SELECT * (all columns)
+                if column == "*" {
+                    continue;
+                }
                 self.validate_identifier(column, "column")?;
             }
         }

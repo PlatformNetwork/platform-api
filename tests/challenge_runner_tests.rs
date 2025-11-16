@@ -42,6 +42,7 @@ async fn test_challenge_runner_creation() {
         None, // orm_gateway
         None, // validator_challenge_status
         None, // redis_client
+        None, // validator_connections
     );
     
     // Test that runner can be created

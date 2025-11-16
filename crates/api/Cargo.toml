@@ -37,6 +37,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 base64 = "0.22"
+tempfile = "3.10"
 
 # Logging
 tracing = { workspace = true }

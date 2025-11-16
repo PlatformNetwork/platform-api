@@ -22,16 +22,6 @@ struct EncryptedEnvelope {
     ciphertext: String, // base64
 }
 
-/// Plaintext message payload structure after decryption
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlainMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    #[serde(default)]
-    payload: serde_json::Value,
-    #[serde(default)]
-    message_id: Option<String>, // Used by MessageRouter for request/response matching
-}
 
 /// Connection state tracking for TDX verification enforcement
 #[derive(Debug, Clone)]
@@ -63,6 +53,12 @@ pub struct ChallengeWsClient {
             >,
         >,
     >, // Channel to send migrations back to caller
+    pub migrations_applied_receiver: Option<
+        Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    >, // Channel to receive signal that migrations are applied (from mod.rs)
+    pub migrations_applied_sender: Option<
+        Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    >, // Channel to send signal that migrations are applied (from WebSocket task)
     pub validator_challenge_status: Option<
         Arc<
             tokio::sync::RwLock<
@@ -77,6 +73,10 @@ pub struct ChallengeWsClient {
         >,
     >, // For get_validator_count
     pub redis_client: Option<Arc<RedisClient>>, // Redis client for job progress logging
+    pub compose_hash: Option<String>, // Compose hash for this challenge (used for validator filtering)
+    pub validator_connections: Option<
+        Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::state::ValidatorConnection>>>,
+    >, // Validator connections for getting connected validators
 }
 
 impl ChallengeWsClient {
@@ -91,8 +91,12 @@ impl ChallengeWsClient {
             schema_name: None,
             db_version_sender: None,
             migrations_sender: None,
+            migrations_applied_receiver: None,
+            migrations_applied_sender: None,
             validator_challenge_status: None,
             redis_client: None,
+            compose_hash: None,
+            validator_connections: None,
         }
     }
 
@@ -117,6 +121,12 @@ impl ChallengeWsClient {
                 >,
             >,
         >,
+        migrations_applied_receiver: Option<
+            Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+        >,
+        migrations_applied_sender: Option<
+            Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        >,
         validator_challenge_status: Option<
             Arc<
                 tokio::sync::RwLock<
@@ -139,9 +149,64 @@ impl ChallengeWsClient {
         self.schema_name = schema_name;
         self.db_version_sender = db_version_sender;
         self.migrations_sender = migrations_sender;
+        self.migrations_applied_receiver = migrations_applied_receiver;
+        self.migrations_applied_sender = migrations_applied_sender;
         self.validator_challenge_status = validator_challenge_status;
         self.redis_client = redis_client;
         self
+    }
+
+    /// Set compose_hash for this challenge
+    pub fn with_compose_hash(mut self, compose_hash: String) -> Self {
+        self.compose_hash = Some(compose_hash);
+        self
+    }
+
+    /// Get list of active validator hotkeys for a specific compose_hash
+    /// Uses both validator_challenge_status (if available) and validator_connections (WebSocket connections)
+    async fn get_active_validators_for_compose_hash(
+        &self,
+        compose_hash: &str,
+        validator_status: &Arc<
+            tokio::sync::RwLock<
+                std::collections::HashMap<
+                    String,
+                    std::collections::HashMap<
+                        String,
+                        platform_api_models::ValidatorChallengeStatus,
+                    >,
+                >,
+            >,
+        >,
+    ) -> Vec<String> {
+        let mut validators = std::collections::HashSet::new();
+
+        // First, get validators from validator_challenge_status (if they have Active state)
+        let status_map = validator_status.read().await;
+        for (hotkey, challenge_statuses) in status_map.iter() {
+            if let Some(status) = challenge_statuses.get(compose_hash) {
+                if matches!(
+                    status.state,
+                    platform_api_models::ValidatorChallengeState::Active
+                ) {
+                    validators.insert(hotkey.clone());
+                }
+            }
+        }
+        drop(status_map);
+
+        // Also include validators connected via WebSocket with matching compose_hash
+        // This is a fallback when validator_challenge_status doesn't have Active state
+        if let Some(validator_conns) = &self.validator_connections {
+            let connections = validator_conns.read().await;
+            for (hotkey, conn) in connections.iter() {
+                if conn.compose_hash == compose_hash {
+                    validators.insert(hotkey.clone());
+                }
+            }
+        }
+
+        validators.into_iter().collect()
     }
 
     /// Connect with reconnection logic and handle messages
@@ -290,30 +355,36 @@ impl ChallengeWsClient {
                                 .to_lowercase()
                                 == "false";
 
-                        if dev_mode {
-                            // In dev mode, challenge skips attestation_ok and uses plain text
-                            // We need to detect this and use plain text messages
-                            debug!("DEV MODE: Challenge will use plain text session, skipping attestation_ok");
-                            // Use a dummy key for compatibility, but we'll send plain text messages
-                            break key_bytes;
+                        // Check if encryption should be enabled in dev mode (TDX simulation or explicit encryption flag)
+                        let tdx_simulation_mode = std::env::var("TDX_SIMULATION_MODE")
+                            .unwrap_or_else(|_| "false".to_string())
+                            .to_lowercase()
+                            == "true";
+                        // Always use encryption
+                        
+                        // Log mode for debugging
+                        if dev_mode || tdx_simulation_mode {
+                            debug!("DEV MODE: Using encrypted session with mock TDX attestation");
                         } else {
-                            // Send attestation_ok with HKDF salt (like validator does)
-                            let ok_msg = Message::Text(
-                                serde_json::json!({
-                                    "type": "attestation_ok",
-                                    "aead": "chacha20poly1305",
-                                    "hkdf_salt": hkdf_salt_b64,
-                                })
-                                .to_string(),
-                            );
-                            {
-                                let mut write = write_handle.lock().await;
-                                write.send(ok_msg).await?;
-                            }
-
-                            debug!("TDX attestation verified, connection encrypted");
-                            break key_bytes;
+                            debug!("Production mode: Using encrypted session with real TDX attestation");
                         }
+
+                        // Always send attestation_ok with HKDF salt
+                        let ok_msg = Message::Text(
+                            serde_json::json!({
+                                "type": "attestation_ok",
+                                "aead": "chacha20poly1305",
+                                "hkdf_salt": hkdf_salt_b64,
+                            })
+                            .to_string(),
+                        );
+                        {
+                            let mut write = write_handle.lock().await;
+                            write.send(ok_msg).await?;
+                        }
+
+                        debug!("TDX attestation verified, connection encrypted");
+                        break key_bytes;
                     }
                 }
 
@@ -323,7 +394,7 @@ impl ChallengeWsClient {
             }
         };
 
-        // Check if we're in dev mode (use plain text messages)
+        // Check if we're in dev mode (use plain text messages by default)
         let dev_mode = std::env::var("DEV_MODE")
             .unwrap_or_else(|_| "false".to_string())
             .to_lowercase()
@@ -332,6 +403,14 @@ impl ChallengeWsClient {
                 .unwrap_or_else(|_| "true".to_string())
                 .to_lowercase()
                 == "false";
+        
+        // Check if encryption should be enabled in dev mode
+        let tdx_simulation_mode = std::env::var("TDX_SIMULATION_MODE")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
+        // Always use encryption
+        let use_encryption = true;
 
         // After TDX verification, request migrations via WebSocket (encrypted or plain text based on mode)
         // Only request migrations if CHALLENGE_ADMIN=true (admin mode)
@@ -339,8 +418,9 @@ impl ChallengeWsClient {
         if let Some(_migration_runner) = &self.migration_runner {
             // In admin mode (CHALLENGE_ADMIN=true), we request migrations
             // In non-admin mode, the challenge will return empty migrations
-            if dev_mode {
-                debug!("DEV MODE: Requesting migrations via plain text WebSocket");
+            // Always using encryption
+            if tdx_simulation_mode {
+                debug!("DEV MODE (SIMULATION): Requesting migrations via encrypted WebSocket");
             } else {
                 info!(
                     "Requesting migrations via encrypted WebSocket (only if CHALLENGE_ADMIN=true)"
@@ -352,18 +432,9 @@ impl ChallengeWsClient {
                 "type": "migrations_request"
             });
 
-            if dev_mode {
-                // In dev mode, send plain text message
-                {
-                    let mut write = write_handle.lock().await;
-                    let msg_str = serde_json::to_string(&request_msg)?;
-                    write.send(Message::Text(msg_str)).await?;
-                    debug!("DEV MODE: migrations_request sent (plain text), waiting for response...");
-                }
-            } else {
-                // In production mode, encrypt the message
-                let mut request_nonce = [0u8; 12];
-                rand::thread_rng().fill_bytes(&mut request_nonce);
+            // Always encrypt the message
+            let mut request_nonce = [0u8; 12];
+            rand::thread_rng().fill_bytes(&mut request_nonce);
                 let request_nonce_b64 = base64_engine.encode(request_nonce);
 
                 let request_bytes = serde_json::to_vec(&request_msg)
@@ -388,11 +459,12 @@ impl ChallengeWsClient {
                     write.send(Message::Text(envelope_str.clone())).await?;
                     info!("migrations_request sent, waiting for response...");
                 }
-            }
 
             // Wait for migrations_response
+            // Increased timeout to 300 seconds (5 minutes) to allow for long-running migrations
+            // The migration 009 and others may take time to apply, especially with many INSERT statements
             let mut migrations_received = false;
-            let timeout = tokio::time::Duration::from_secs(30);
+            let timeout = tokio::time::Duration::from_secs(300);
             let start = tokio::time::Instant::now();
 
             while !migrations_received && start.elapsed() < timeout {
@@ -404,8 +476,8 @@ impl ChallengeWsClient {
                         match msg_result {
                             Ok(msg) => {
                                 if let Message::Text(text) = msg {
-                                    let plain_msg: PlainMessage = if dev_mode {
-                                        // In dev mode, message is already plain text
+                                    let plain_msg: serde_json::Value = if !use_encryption {
+                                        // In dev mode without encryption, message is already plain text
                                         debug!("DEV MODE: Received plain text message in migrations wait loop");
                                         match serde_json::from_str(&text) {
                                             Ok(pm) => pm,
@@ -415,8 +487,8 @@ impl ChallengeWsClient {
                                             }
                                         }
                                     } else {
-                                        // In production mode, decrypt the message
-                                        info!("Received message in migrations wait loop, decrypting...");
+                                        // Decrypt the message (production mode or dev mode with encryption enabled)
+                                        // (Logging removed for verbosity)
                                         let json: Value = serde_json::from_str(&text)?;
                                         let envelope: EncryptedEnvelope =
                                             serde_json::from_value(json)?;
@@ -475,15 +547,15 @@ impl ChallengeWsClient {
                                         }
                                     };
 
-                                    info!(msg_type = %plain_msg.msg_type, "Decrypted message type");
+                                    info!(msg_type = %plain_msg["type"].as_str().unwrap_or(""), "Decrypted message type");
 
-                                    if plain_msg.msg_type == "migrations_response" {
+                                    if plain_msg["type"].as_str().unwrap_or("") == "migrations_response" {
                                         info!("✅ Received migrations_response message");
 
                                         // Extract DB version from payload
                                         let db_version = plain_msg
-                                            .payload
-                                            .get("db_version")
+                                            .get("payload")
+                                            .and_then(|p| p.get("db_version"))
                                             .and_then(|v| v.as_u64())
                                             .map(|v| v as u32);
 
@@ -510,7 +582,7 @@ impl ChallengeWsClient {
                                         }
 
                                         if let Some(migrations_json) =
-                                            plain_msg.payload.get("migrations")
+                                            plain_msg.get("payload").and_then(|p| p.get("migrations"))
                                         {
                                             if let Ok(received_migrations) = serde_json::from_value::<
                                                 Vec<crate::challenge_runner::migrations::Migration>,
@@ -532,10 +604,52 @@ impl ChallengeWsClient {
                                                     }
                                                 }
 
+                                                // Apply migrations immediately in WebSocket task to ensure they're done before orm_ready
+                                                // This prevents the WebSocket from closing before migrations are applied
+                                                if let Some(migration_runner) = &self.migration_runner {
+                                                    if let Some(schema_arc) = &self.schema_name {
+                                                        let schema_name = schema_arc.read().await.clone();
+                                                        info!(
+                                                            schema = &schema_name,
+                                                            count = received_migrations.len(),
+                                                            "Applying migrations in WebSocket task before sending orm_ready"
+                                                        );
+                                                        match migration_runner
+                                                            .apply_migrations(&schema_name, received_migrations)
+                                                            .await
+                                                        {
+                                                            Ok(applied) => {
+                                                                info!(
+                                                                    schema = &schema_name,
+                                                                    applied_count = applied.len(),
+                                                                    "✅ Migrations applied successfully in WebSocket task"
+                                                                );
+                                                                // Signal that migrations are applied
+                                                                if let Some(sender_arc) = &self.migrations_applied_sender {
+                                                                    let mut sender_opt = sender_arc.lock().await;
+                                                                    if let Some(sender) = sender_opt.take() {
+                                                                        if sender.send(()).is_err() {
+                                                                            warn!("Failed to send migrations_applied signal (receiver may have dropped)");
+                                                                        } else {
+                                                                            info!("✅ Sent migrations_applied signal from WebSocket task");
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                warn!(
+                                                                    schema = &schema_name,
+                                                                    error = %e,
+                                                                    "Failed to apply migrations in WebSocket task (non-fatal)"
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 // Mark migrations as received
                                                 migrations_received = true;
                                                 // Don't break - continue the connection for ORM bridge
-                                                // Migrations will be applied by the caller once schema_name is finalized
                                             } else {
                                                 warn!("Failed to parse migrations from migrations_response");
                                             }
@@ -544,7 +658,7 @@ impl ChallengeWsClient {
                                         }
                                     } else {
                                         // Log other message types for debugging
-                                        info!(msg_type = %plain_msg.msg_type, "Received other message type in migrations wait loop (not migrations_response)");
+                                        info!(msg_type = %plain_msg["type"].as_str().unwrap_or(""), "Received other message type in migrations wait loop (not migrations_response)");
                                     }
                                 } else {
                                     // Check if it's a Close, Ping, or Pong message
@@ -606,6 +720,37 @@ impl ChallengeWsClient {
             }
         }
 
+        // Wait for migrations to be applied before sending orm_ready
+        // This ensures that all database tables exist before the challenge starts making ORM queries
+        if let Some(receiver_arc) = &self.migrations_applied_receiver {
+            if let Some(mut receiver_guard) = receiver_arc.lock().await.take() {
+                info!("Waiting for migrations to be applied before sending orm_ready...");
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_secs(60),
+                    receiver_guard,
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        info!("✅ Migrations applied - ready to send orm_ready signal");
+                    }
+                    Ok(Err(_)) => {
+                        warn!("Migrations applied channel closed unexpectedly");
+                    }
+                    Err(_) => {
+                        warn!("Timeout waiting for migrations to be applied (60s) - sending orm_ready anyway");
+                    }
+                }
+            } else {
+                warn!("No migrations_applied_receiver available - sending orm_ready immediately (migrations may not be applied yet)");
+            }
+        } else {
+            // If no receiver is provided, wait a short time for migrations to be applied
+            // This is a fallback for cases where migrations_applied_receiver is not set
+            info!("No migrations_applied_receiver configured - waiting 5 seconds for migrations to be applied");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+
         // Send orm_ready signal to challenge after migrations are applied (or timeout)
         // This tells the challenge that it can now initialize ORM client and run tests
         {
@@ -628,8 +773,8 @@ impl ChallengeWsClient {
                 "schema": schema_name_for_challenge
             });
 
-            if dev_mode {
-                // In dev mode, send plain text message
+            if !use_encryption {
+                // In dev mode without encryption, send plain text message
                 {
                     let mut write = write_handle.lock().await;
                     let msg_str = serde_json::to_string(&orm_ready_msg)?;
@@ -637,7 +782,7 @@ impl ChallengeWsClient {
                     debug!("DEV MODE: Sent orm_ready signal to challenge (plain text)");
                 }
             } else {
-                // In production mode, encrypt the message
+                // Encrypt the message (production mode or dev mode with encryption enabled)
                 let cipher_for_ready = ChaCha20Poly1305::new_from_slice(&aead_key)
                     .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
                 let mut orm_ready_nonce = [0u8; 12];
@@ -668,17 +813,388 @@ impl ChallengeWsClient {
             }
         }
 
+        // Send initial validator list to challenge after orm_ready
+        // This ensures the challenge has validator information immediately on startup
+        if let Some(compose_hash) = &self.compose_hash {
+            let mut active_validators = std::collections::HashSet::new();
+            
+            // Get validators from validator_challenge_status
+            if let Some(validator_status) = &self.validator_challenge_status {
+                let status_map = validator_status.read().await;
+                for (hotkey, challenge_statuses) in status_map.iter() {
+                    if let Some(status) = challenge_statuses.get(compose_hash) {
+                        if matches!(
+                            status.state,
+                            platform_api_models::ValidatorChallengeState::Active
+                        ) {
+                            active_validators.insert(hotkey.clone());
+                        }
+                    }
+                }
+                drop(status_map); // Release lock
+            }
+            
+            // Also get validators from WebSocket connections (important fallback)
+            if let Some(validator_conns) = &self.validator_connections {
+                let connections = validator_conns.read().await;
+                for (hotkey, conn) in connections.iter() {
+                    if conn.compose_hash == *compose_hash {
+                        active_validators.insert(hotkey.clone());
+                    }
+                }
+                drop(connections); // Release lock
+            }
+            
+            let active_validators: Vec<String> = active_validators.into_iter().collect();
+            
+            if let Some(_validator_status) = &self.validator_challenge_status {
+                
+                if !active_validators.is_empty() {
+                    info!(
+                        compose_hash = compose_hash,
+                        validator_count = active_validators.len(),
+                        "Sending initial validator list to challenge"
+                    );
+                    
+                    let validator_update_msg = serde_json::json!({
+                        "type": "validator_status_update",
+                        "compose_hash": compose_hash,
+                        "validators": active_validators.iter().map(|v| serde_json::json!({
+                            "hotkey": v,
+                            "status": "active"
+                        })).collect::<Vec<_>>()
+                    });
+
+                    if !use_encryption {
+                        // In dev mode without encryption, send plain text message
+                        {
+                            let mut write = write_handle.lock().await;
+                            let msg_str = serde_json::to_string(&validator_update_msg)?;
+                            write.send(Message::Text(msg_str)).await?;
+                            debug!("DEV MODE: Sent initial validator list to challenge (plain text)");
+                        }
+                    } else {
+                        // Encrypt the message
+                        let cipher_for_update = ChaCha20Poly1305::new_from_slice(&aead_key)
+                            .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
+                        let mut update_nonce = [0u8; 12];
+                        rand::thread_rng().fill_bytes(&mut update_nonce);
+                        let update_nonce_b64 = base64_engine.encode(update_nonce);
+
+                        let update_bytes = serde_json::to_vec(&validator_update_msg)
+                            .map_err(|_| anyhow!("Failed to serialize validator update"))?;
+
+                        let update_ciphertext = cipher_for_update
+                            .encrypt(&update_nonce.into(), update_bytes.as_slice())
+                            .map_err(|_| anyhow!("Failed to encrypt validator update"))?;
+                        let update_ciphertext_b64 = base64_engine.encode(update_ciphertext);
+
+                        let update_envelope = serde_json::json!({
+                            "enc": "chacha20poly1305",
+                            "nonce": update_nonce_b64,
+                            "ciphertext": update_ciphertext_b64,
+                        });
+
+                        {
+                            let mut write = write_handle.lock().await;
+                            write
+                                .send(Message::Text(serde_json::to_string(&update_envelope)?))
+                                .await?;
+                        }
+                        info!("✅ Sent initial validator list to challenge");
+                    }
+                } else {
+                    warn!(
+                        compose_hash = compose_hash,
+                        "No active validators found to send to challenge (validators may connect later)"
+                    );
+                    // Even if no validators are active now, send an empty list to initialize the handler
+                    // This ensures the challenge knows the system is working
+                    let validator_update_msg = serde_json::json!({
+                        "type": "validator_status_update",
+                        "compose_hash": compose_hash,
+                        "validators": []
+                    });
+
+                    if !use_encryption {
+                        let mut write = write_handle.lock().await;
+                        if let Ok(msg_str) = serde_json::to_string(&validator_update_msg) {
+                            if write.send(Message::Text(msg_str)).await.is_ok() {
+                                debug!("Sent empty validator list to challenge (no validators active yet)");
+                            }
+                        }
+                    } else {
+                        if let Ok(cipher_for_update) = ChaCha20Poly1305::new_from_slice(&aead_key) {
+                            let mut update_nonce = [0u8; 12];
+                            rand::thread_rng().fill_bytes(&mut update_nonce);
+                            let update_nonce_b64 = base64_engine.encode(update_nonce);
+
+                            if let Ok(update_bytes) = serde_json::to_vec(&validator_update_msg) {
+                                if let Ok(update_ciphertext) = cipher_for_update
+                                    .encrypt(&update_nonce.into(), update_bytes.as_slice()) {
+                                    let update_ciphertext_b64 = base64_engine.encode(update_ciphertext);
+
+                                    let update_envelope = serde_json::json!({
+                                        "enc": "chacha20poly1305",
+                                        "nonce": update_nonce_b64,
+                                        "ciphertext": update_ciphertext_b64,
+                                    });
+
+                                    let mut write = write_handle.lock().await;
+                                    if let Ok(envelope_str) = serde_json::to_string(&update_envelope) {
+                                        if write.send(Message::Text(envelope_str)).await.is_ok() {
+                                            debug!("Sent empty validator list to challenge (encrypted, no validators active yet)");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // If validator_challenge_status is not available, still try to use validator_connections
+                if !active_validators.is_empty() {
+                    info!(
+                        compose_hash = compose_hash,
+                        validator_count = active_validators.len(),
+                        "Sending initial validator list to challenge (from WebSocket connections only)"
+                    );
+                    
+                    let validator_update_msg = serde_json::json!({
+                        "type": "validator_status_update",
+                        "compose_hash": compose_hash,
+                        "validators": active_validators.iter().map(|v| serde_json::json!({
+                            "hotkey": v,
+                            "status": "active"
+                        })).collect::<Vec<_>>()
+                    });
+                    
+                    if !use_encryption {
+                        let mut write = write_handle.lock().await;
+                        if let Ok(msg_str) = serde_json::to_string(&validator_update_msg) {
+                            if write.send(Message::Text(msg_str)).await.is_ok() {
+                                debug!("Sent initial validator list to challenge (from WebSocket connections, plain text)");
+                            }
+                        }
+                    } else {
+                        if let Ok(cipher_for_update) = ChaCha20Poly1305::new_from_slice(&aead_key) {
+                            let mut update_nonce = [0u8; 12];
+                            rand::thread_rng().fill_bytes(&mut update_nonce);
+                            let update_nonce_b64 = base64_engine.encode(update_nonce);
+                            
+                            if let Ok(update_bytes) = serde_json::to_vec(&validator_update_msg) {
+                                if let Ok(update_ciphertext) = cipher_for_update
+                                    .encrypt(&update_nonce.into(), update_bytes.as_slice()) {
+                                    let update_ciphertext_b64 = base64_engine.encode(update_ciphertext);
+                                    
+                                    let update_envelope = serde_json::json!({
+                                        "enc": "chacha20poly1305",
+                                        "nonce": update_nonce_b64,
+                                        "ciphertext": update_ciphertext_b64,
+                                    });
+                                    
+                                    let mut write = write_handle.lock().await;
+                                    if let Ok(envelope_str) = serde_json::to_string(&update_envelope) {
+                                        if write.send(Message::Text(envelope_str)).await.is_ok() {
+                                            debug!("Sent initial validator list to challenge (from WebSocket connections, encrypted)");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Send empty list to initialize the handler
+                    let validator_update_msg = serde_json::json!({
+                        "type": "validator_status_update",
+                        "compose_hash": compose_hash,
+                        "validators": []
+                    });
+
+                    if !use_encryption {
+                        let mut write = write_handle.lock().await;
+                        if let Ok(msg_str) = serde_json::to_string(&validator_update_msg) {
+                            if write.send(Message::Text(msg_str)).await.is_ok() {
+                                debug!("Sent empty validator list to challenge (no validators active yet)");
+                            }
+                        }
+                    } else {
+                        if let Ok(cipher_for_update) = ChaCha20Poly1305::new_from_slice(&aead_key) {
+                            let mut update_nonce = [0u8; 12];
+                            rand::thread_rng().fill_bytes(&mut update_nonce);
+                            let update_nonce_b64 = base64_engine.encode(update_nonce);
+
+                            if let Ok(update_bytes) = serde_json::to_vec(&validator_update_msg) {
+                                if let Ok(update_ciphertext) = cipher_for_update
+                                    .encrypt(&update_nonce.into(), update_bytes.as_slice()) {
+                                    let update_ciphertext_b64 = base64_engine.encode(update_ciphertext);
+
+                                    let update_envelope = serde_json::json!({
+                                        "enc": "chacha20poly1305",
+                                        "nonce": update_nonce_b64,
+                                        "ciphertext": update_ciphertext_b64,
+                                    });
+
+                                    let mut write = write_handle.lock().await;
+                                    if let Ok(envelope_str) = serde_json::to_string(&update_envelope) {
+                                        if write.send(Message::Text(envelope_str)).await.is_ok() {
+                                            debug!("Sent empty validator list to challenge (encrypted, no validators active yet)");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Clone references for ORM handling
         let challenge_id_clone = self.challenge_id.clone();
         let orm_gateway_clone = self.orm_gateway.clone();
         let write_handle_for_orm = write_handle.clone();
+        
+        // Clone references for periodic validator updates
+        let compose_hash_for_updates = self.compose_hash.clone();
+        let validator_status_for_updates = self.validator_challenge_status.clone();
+        let validator_connections_for_updates = self.validator_connections.clone();
+        let write_handle_for_updates = write_handle.clone();
+        let use_encryption_for_updates = use_encryption;
+        let aead_key_for_updates = aead_key.clone();
+
+        // Spawn task for periodic validator list refresh (every 5 seconds for faster updates)
+        if compose_hash_for_updates.is_some() && (validator_status_for_updates.is_some() || validator_connections_for_updates.is_some()) {
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    
+                    if let Some(compose_hash) = &compose_hash_for_updates {
+                        let mut active_validators = std::collections::HashSet::new();
+                        
+                        // Get validators from validator_challenge_status
+                        if let Some(validator_status) = &validator_status_for_updates {
+                            let status_map = validator_status.read().await;
+                            for (hotkey, challenge_statuses) in status_map.iter() {
+                                if let Some(status) = challenge_statuses.get(compose_hash) {
+                                    if matches!(
+                                        status.state,
+                                        platform_api_models::ValidatorChallengeState::Active
+                                    ) {
+                                        active_validators.insert(hotkey.clone());
+                                    }
+                                }
+                            }
+                            drop(status_map); // Release lock
+                        }
+                        
+                        // Also get validators from WebSocket connections
+                        if let Some(validator_conns) = &validator_connections_for_updates {
+                            let connections = validator_conns.read().await;
+                            for (hotkey, conn) in connections.iter() {
+                                if conn.compose_hash == *compose_hash {
+                                    active_validators.insert(hotkey.clone());
+                                }
+                            }
+                            drop(connections); // Release lock
+                        }
+                        
+                        let active_validators: Vec<String> = active_validators.into_iter().collect();
+                        
+                        if !active_validators.is_empty() {
+                            debug!(
+                                compose_hash = compose_hash,
+                                validator_count = active_validators.len(),
+                                "Sending periodic validator list update to challenge"
+                            );
+                            let validator_update_msg = serde_json::json!({
+                                "type": "validator_status_update",
+                                "compose_hash": compose_hash,
+                                "validators": active_validators.iter().map(|v| serde_json::json!({
+                                    "hotkey": v,
+                                    "status": "active"
+                                })).collect::<Vec<_>>()
+                            });
+
+                            if !use_encryption_for_updates {
+                                // In dev mode without encryption, send plain text message
+                                {
+                                    let mut write = write_handle_for_updates.lock().await;
+                                    if let Ok(msg_str) = serde_json::to_string(&validator_update_msg) {
+                                        if write.send(Message::Text(msg_str)).await.is_ok() {
+                                            debug!("Sent periodic validator list update to challenge");
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Encrypt the message
+                                if let Ok(cipher_for_update) = ChaCha20Poly1305::new_from_slice(&aead_key_for_updates) {
+                                    let mut update_nonce = [0u8; 12];
+                                    rand::thread_rng().fill_bytes(&mut update_nonce);
+                                    let update_nonce_b64 = base64_engine.encode(update_nonce);
+
+                                    if let Ok(update_bytes) = serde_json::to_vec(&validator_update_msg) {
+                                        if let Ok(update_ciphertext) = cipher_for_update
+                                            .encrypt(&update_nonce.into(), update_bytes.as_slice()) {
+                                            let update_ciphertext_b64 = base64_engine.encode(update_ciphertext);
+
+                                            let update_envelope = serde_json::json!({
+                                                "enc": "chacha20poly1305",
+                                                "nonce": update_nonce_b64,
+                                                "ciphertext": update_ciphertext_b64,
+                                            });
+
+                                            {
+                                                let mut write = write_handle_for_updates.lock().await;
+                                                if let Ok(envelope_str) = serde_json::to_string(&update_envelope) {
+                                                    if write.send(Message::Text(envelope_str)).await.is_ok() {
+                                                        debug!("Sent periodic validator list update to challenge (encrypted)");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         // Now handle verified messages (conn_state is guaranteed to be Verified at this point)
-        while let Some(msg) = read.next().await {
-            let msg = msg?;
-            if let Message::Text(text) = msg {
-                let plain_msg: PlainMessage = if dev_mode {
-                    // In dev mode, message is already plain text
+        info!("Entering main message loop for ORM bridge and other messages");
+        while let Some(msg_result) = read.next().await {
+            let msg = match msg_result {
+                Ok(m) => m,
+                Err(e) => {
+                    error!(error = %e, "Error receiving WebSocket message - connection may be broken");
+                    break;
+                }
+            };
+            
+            // Handle different message types
+            match &msg {
+                Message::Close(_) => {
+                    warn!("Received Close message from challenge - closing connection");
+                    break;
+                }
+                Message::Ping(data) => {
+                    debug!("Received Ping, responding with Pong");
+                    let mut write = write_handle.lock().await;
+                    if let Err(e) = write.send(Message::Pong(data.clone())).await {
+                        warn!(error = %e, "Failed to send Pong response");
+                        break;
+                    }
+                    continue;
+                }
+                Message::Pong(_) => {
+                    debug!("Received Pong");
+                    continue;
+                }
+                Message::Text(text) => {
+                let plain_msg: serde_json::Value = if !use_encryption {
+                    // In dev mode without encryption, message is already plain text
                     match serde_json::from_str(&text) {
                         Ok(pm) => pm,
                         Err(e) => {
@@ -687,7 +1203,7 @@ impl ChallengeWsClient {
                         }
                     }
                 } else {
-                    // In production mode, decrypt the message
+                    // Decrypt the message (production mode or dev mode with encryption enabled)
                     info!("📥 Received raw WebSocket message (encrypted envelope)");
 
                     let json: Value = match serde_json::from_str(&text) {
@@ -751,21 +1267,21 @@ impl ChallengeWsClient {
                     match serde_json::from_slice(&plaintext) {
                         Ok(pm) => pm,
                         Err(e) => {
-                            warn!(error = %e, "Failed to parse decrypted plaintext as PlainMessage");
+                            warn!(error = %e, "Failed to parse decrypted plaintext as JSON");
                             continue;
                         }
                     }
                 };
 
-                // Log all incoming messages for debugging
-                info!(
-                    msg_type = &plain_msg.msg_type,
-                    challenge_id = challenge_id_clone.as_deref(),
-                    "Received message from challenge via WebSocket"
-                );
+                // Log all incoming messages for debugging (reduced verbosity)
+                // info!(
+                //     msg_type = &plain_msg["type"].as_str().unwrap_or(""),
+                //     challenge_id = challenge_id_clone.as_deref(),
+                //     "Received message from challenge via WebSocket"
+                // );
 
-                // Create cipher for encryption (only needed in production mode)
-                let cipher_opt = if dev_mode {
+                // Create cipher for encryption (needed if encryption is enabled)
+                let cipher_opt = if !use_encryption {
                     None
                 } else {
                     Some(ChaCha20Poly1305::new_from_slice(&aead_key).map_err(|_| {
@@ -775,12 +1291,12 @@ impl ChallengeWsClient {
                 };
 
                 // Handle benchmark_progress messages for Redis logging
-                if plain_msg.msg_type == "benchmark_progress" {
+                if plain_msg["type"].as_str().unwrap_or("") == "benchmark_progress" {
                     if let Some(redis) = &self.redis_client {
                         if let Some(job_id) =
-                            plain_msg.payload.get("job_id").and_then(|v| v.as_str())
+                            plain_msg.get("payload").and_then(|p| p.get("job_id")).and_then(|v| v.as_str())
                         {
-                            if let Some(progress_data) = plain_msg.payload.get("progress") {
+                            if let Some(progress_data) = plain_msg.get("payload").and_then(|p| p.get("progress")) {
                                 // Extract progress metrics
                                 let progress_obj = progress_data.as_object();
                                 let progress_percent = progress_obj
@@ -846,15 +1362,15 @@ impl ChallengeWsClient {
                 }
 
                 // Handle ORM permissions update from challenge
-                if plain_msg.msg_type == "orm_permissions" {
+                if plain_msg["type"].as_str().unwrap_or("") == "orm_permissions" {
                     if let Some(challenge_id) = &challenge_id_clone {
                         if let Some(orm_gateway) = &orm_gateway_clone {
                             // Extract permissions from payload
                             if let (Some(permissions_json), Some(msg_challenge_id)) = (
-                                plain_msg.payload.get("permissions"),
+                                plain_msg.get("payload").and_then(|p| p.get("permissions")),
                                 plain_msg
-                                    .payload
-                                    .get("challenge_id")
+                                    .get("payload")
+                                    .and_then(|p| p.get("challenge_id"))
                                     .and_then(|v| v.as_str()),
                             ) {
                                 // Verify challenge_id matches
@@ -899,8 +1415,8 @@ impl ChallengeWsClient {
                                                     "status": "success"
                                                 });
 
-                                                if dev_mode {
-                                                    // In dev mode, send plain text acknowledgment
+                                                if !use_encryption {
+                                                    // In dev mode without encryption, send plain text acknowledgment
                                                     {
                                                         let mut write = write_handle.lock().await;
                                                         let msg_str =
@@ -908,7 +1424,7 @@ impl ChallengeWsClient {
                                                         write.send(Message::Text(msg_str)).await?;
                                                     }
                                                 } else {
-                                                    // In production mode, encrypt the acknowledgment
+                                                    // Encrypt the acknowledgment (production mode or dev mode with encryption enabled)
                                                     if let Some(cipher) = &cipher_opt {
                                                         let mut ack_nonce = [0u8; 12];
                                                         rand::thread_rng()
@@ -979,12 +1495,12 @@ impl ChallengeWsClient {
                 }
 
                 // Handle get_validator_count request
-                if plain_msg.msg_type == "get_validator_count" {
+                if plain_msg["type"].as_str().unwrap_or("") == "get_validator_count" {
                     if let Some(validator_status) = &self.validator_challenge_status {
                         // Extract compose_hash from payload
                         if let Some(compose_hash) = plain_msg
-                            .payload
-                            .get("compose_hash")
+                            .get("payload")
+                            .and_then(|p| p.get("compose_hash"))
                             .and_then(|v| v.as_str())
                         {
                             // Count active validators for this compose_hash
@@ -1015,15 +1531,15 @@ impl ChallengeWsClient {
                                 "count": count
                             });
 
-                            if dev_mode {
-                                // In dev mode, send plain text response
+                            if !use_encryption {
+                                // In dev mode without encryption, send plain text response
                                 {
                                     let mut write = write_handle.lock().await;
                                     let msg_str = serde_json::to_string(&response_msg)?;
                                     write.send(Message::Text(msg_str)).await?;
                                 }
                             } else {
-                                // In production mode, encrypt the response
+                                // Encrypt the response (production mode or dev mode with encryption enabled)
                                 if let Some(cipher) = &cipher_opt {
                                     let mut response_nonce = [0u8; 12];
                                     rand::thread_rng().fill_bytes(&mut response_nonce);
@@ -1065,9 +1581,9 @@ impl ChallengeWsClient {
                 }
 
                 // Handle ORM queries via bridge/proxy
-                if plain_msg.msg_type == "orm_query" {
+                if plain_msg["type"].as_str().unwrap_or("") == "orm_query" {
                     info!(
-                        msg_type = &plain_msg.msg_type,
+                        msg_type = &plain_msg["type"].as_str().unwrap_or(""),
                         challenge_id = challenge_id_clone.as_deref(),
                         has_orm_gateway = orm_gateway_clone.is_some(),
                         "Received ORM query message"
@@ -1075,7 +1591,7 @@ impl ChallengeWsClient {
                     if let Some(challenge_id) = &challenge_id_clone {
                         if let Some(orm_gateway) = &orm_gateway_clone {
                             // Extract ORM query from payload
-                            if let Some(query_json) = plain_msg.payload.get("query") {
+                            if let Some(query_json) = plain_msg.get("payload").and_then(|p| p.get("query")) {
                                 match serde_json::from_value::<crate::orm_gateway::ORMQuery>(
                                     query_json.clone(),
                                 ) {
@@ -1119,20 +1635,20 @@ impl ChallengeWsClient {
                                                 // 2. payload.query.query_id (nested in query object)
                                                 // 3. message_id at root level (used by MessageRouter)
                                                 let query_id_opt = plain_msg
-                                                    .payload
-                                                    .get("query_id")
+                                                    .get("payload")
+                                                    .and_then(|p| p.get("query_id"))
                                                     .and_then(|v| v.as_str())
                                                     .or_else(|| {
                                                         // Also check if query_id is in the query object
                                                         plain_msg
-                                                            .payload
-                                                            .get("query")
+                                                            .get("payload")
+                                                            .and_then(|p| p.get("query"))
                                                             .and_then(|q| q.get("query_id"))
                                                             .and_then(|v| v.as_str())
                                                     })
                                                     .or_else(|| {
                                                         // Also check root-level message_id (used by MessageRouter for matching)
-                                                        plain_msg.message_id.as_deref()
+                                                        plain_msg.get("message_id").and_then(|v| v.as_str())
                                                     });
                                                 if let Some(query_id) = query_id_opt {
                                                     response_msg["query_id"] =
@@ -1149,8 +1665,8 @@ impl ChallengeWsClient {
                                                     warn!("ORM query missing query_id/message_id, response won't be matched");
                                                 }
 
-                                                if dev_mode {
-                                                    // In dev mode, send plain text response
+                                                if !use_encryption {
+                                                    // In dev mode without encryption, send plain text response
                                                     {
                                                         let mut write = write_handle.lock().await;
                                                         let msg_str =
@@ -1222,17 +1738,17 @@ impl ChallengeWsClient {
                                                 });
                                                 // Extract query_id from multiple possible locations (same as success response)
                                                 let query_id_opt = plain_msg
-                                                    .payload
-                                                    .get("query_id")
+                                                    .get("payload")
+                                                    .and_then(|p| p.get("query_id"))
                                                     .and_then(|v| v.as_str())
                                                     .or_else(|| {
                                                         plain_msg
-                                                            .payload
-                                                            .get("query")
+                                                            .get("payload")
+                                                            .and_then(|p| p.get("query"))
                                                             .and_then(|q| q.get("query_id"))
                                                             .and_then(|v| v.as_str())
                                                     })
-                                                    .or_else(|| plain_msg.message_id.as_deref());
+                                                    .or_else(|| plain_msg.get("message_id").and_then(|v| v.as_str()));
                                                 if let Some(query_id) = query_id_opt {
                                                     error_msg["query_id"] =
                                                         serde_json::Value::String(
@@ -1247,8 +1763,8 @@ impl ChallengeWsClient {
                                                     warn!(error = %e, "ORM error missing query_id/message_id, response won't be matched");
                                                 }
 
-                                                if dev_mode {
-                                                    // In dev mode, send plain text error response
+                                                if !use_encryption {
+                                                    // In dev mode without encryption, send plain text error response
                                                     {
                                                         let mut write = write_handle.lock().await;
                                                         let msg_str =
@@ -1256,7 +1772,7 @@ impl ChallengeWsClient {
                                                         write.send(Message::Text(msg_str)).await?;
                                                     }
                                                 } else {
-                                                    // In production mode, encrypt the error response
+                                                    // Encrypt the error response (production mode or dev mode with encryption enabled)
                                                     if let Some(cipher) = &cipher_opt {
                                                         let mut error_nonce = [0u8; 12];
                                                         rand::thread_rng()
@@ -1326,13 +1842,24 @@ impl ChallengeWsClient {
                 // Call the callback with the decrypted message
                 callback(
                     serde_json::json!({
-                        "type": plain_msg.msg_type,
-                        "payload": plain_msg.payload
+                        "type": plain_msg["type"].as_str().unwrap_or(""),
+                        "payload": plain_msg.get("payload").cloned().unwrap_or(serde_json::Value::Null)
                     }),
                     _tx,
                 );
+                }
+                Message::Binary(_) => {
+                    warn!("Received binary message (not supported)");
+                    continue;
+                }
+                Message::Frame(_) => {
+                    debug!("Received Frame message (internal, ignoring)");
+                    continue;
+                }
             }
         }
+        
+        info!("WebSocket message loop ended - connection closed");
 
         Ok(())
     }

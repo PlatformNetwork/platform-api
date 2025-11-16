@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
+use std::process::Command;
+use std::io::Write;
+use tempfile::NamedTempFile;
 use tracing::{error, info, warn};
 
 /// Migration to be applied
@@ -246,189 +249,26 @@ impl MigrationRunner {
         Ok(migrations)
     }
 
-    /// Apply a single migration
+    /// Apply a single migration using psql for direct SQL execution
+    /// This uses PostgreSQL's native parser, guaranteeing 100% compatibility with all SQL syntax
     async fn apply_single_migration(&self, schema_name: &str, migration: &Migration) -> Result<()> {
         info!(
             schema = schema_name,
             version = &migration.version,
             name = &migration.name,
             sql_length = migration.sql.len(),
-            "Starting migration application"
+            "Starting migration application via psql"
         );
 
-        // Start transaction
-        info!(schema = schema_name, "Starting database transaction");
-        let mut tx = match self.pool.begin().await {
-            Ok(t) => {
-                info!(schema = schema_name, "✅ Transaction started");
-                t
-            }
-            Err(e) => {
-                error!(schema = schema_name, error = %e, "Failed to start transaction");
-                return Err(anyhow::anyhow!("Failed to start transaction: {}", e));
-            }
-        };
+        // Execute migration via psql (wrapped in transaction)
+        self.execute_migration_via_psql(schema_name, migration).await?;
 
-        // Set search path
-        let set_path = format!("SET search_path TO {}, public", schema_name);
-        info!(
-            schema = schema_name,
-            search_path = &set_path,
-            "Setting search_path"
-        );
-        match sqlx::query(&set_path).execute(&mut *tx).await {
-            Ok(_) => {
-                info!(schema = schema_name, "✅ search_path set successfully");
-            }
-            Err(e) => {
-                error!(schema = schema_name, error = %e, "Failed to set search_path");
-                let _ = tx.rollback().await;
-                return Err(anyhow::anyhow!("Failed to set search_path: {}", e));
-            }
-        }
-
-        // Execute migration SQL
-        // Split SQL into individual statements (separated by semicolons)
-        // We need to handle multi-line statements correctly and preserve statement integrity
-        // Strategy: Split by semicolon, but only when it's at the end of a trimmed line or followed by whitespace
-        let mut sql_statements = Vec::new();
-        let mut current_statement = String::new();
-
-        // Process line by line to handle multi-line statements correctly
-        for line in migration.sql.lines() {
-            let trimmed_line = line.trim();
-
-            // Skip empty lines and full-line comments
-            if trimmed_line.is_empty() || trimmed_line.starts_with("--") {
-                continue;
-            }
-
-            // Remove inline comments (but preserve semicolons in comments)
-            let line_without_comments = trimmed_line
-                .split("--")
-                .next()
-                .unwrap_or(trimmed_line)
-                .trim();
-
-            if line_without_comments.is_empty() {
-                continue;
-            }
-
-            // Add line to current statement
-            if !current_statement.is_empty() {
-                current_statement.push('\n');
-            }
-            current_statement.push_str(line_without_comments);
-
-            // Check if line ends with semicolon (statement terminator)
-            if line_without_comments.ends_with(';') {
-                // Remove trailing semicolon for this statement
-                let statement = current_statement.trim_end_matches(';').trim().to_string();
-
-                if !statement.is_empty() {
-                    sql_statements.push(statement);
-                }
-                current_statement.clear();
-            }
-        }
-
-        // Add any remaining statement (in case last statement doesn't end with semicolon)
-        let remaining = current_statement.trim().to_string();
-        if !remaining.is_empty() {
-            sql_statements.push(remaining);
-        }
-
-        info!(
-            schema = schema_name,
-            version = &migration.version,
-            total_statements = sql_statements.len(),
-            sql_preview = &migration.sql.chars().take(200).collect::<String>(),
-            "Executing migration SQL (split into {} statements)",
-            sql_statements.len()
-        );
-
-        for (idx, statement) in sql_statements.iter().enumerate() {
-            if statement.trim().is_empty() {
-                continue;
-            }
-
-            info!(
-                schema = schema_name,
-                version = &migration.version,
-                statement_index = idx + 1,
-                total_statements = sql_statements.len(),
-                statement_preview = &statement.chars().take(100).collect::<String>(),
-                "Executing SQL statement {}/{}",
-                idx + 1,
-                sql_statements.len()
-            );
-
-            match sqlx::query(statement).execute(&mut *tx).await {
-                Ok(result) => {
-                    info!(
-                        schema = schema_name,
-                        version = &migration.version,
-                        statement_index = idx + 1,
-                        rows_affected = result.rows_affected(),
-                        "✅ Statement {}/{} executed successfully",
-                        idx + 1,
-                        sql_statements.len()
-                    );
-                }
-                Err(e) => {
-                    let error_details = format!("{}", e);
-                    error!(
-                        schema = schema_name,
-                        version = &migration.version,
-                        name = &migration.name,
-                        statement_index = idx + 1,
-                        total_statements = sql_statements.len(),
-                        error = %e,
-                        error_details = &error_details,
-                        statement = &statement.chars().take(500).collect::<String>(),
-                        "❌ Failed to execute SQL statement {}/{}",
-                        idx + 1,
-                        sql_statements.len()
-                    );
-
-                    // Try to extract database error details if available
-                    if let Some(db_err) = e.as_database_error() {
-                        error!(
-                            schema = schema_name,
-                            version = &migration.version,
-                            db_error_code = ?db_err.code(),
-                            db_error_message = db_err.message(),
-                            db_error_constraint = db_err.constraint(),
-                            db_error_table = db_err.table(),
-                            "PostgreSQL error details"
-                        );
-                    }
-
-                    let _ = tx.rollback().await;
-                    return Err(anyhow::anyhow!(
-                        "Failed to execute migration SQL statement {}/{} for {} - {}: {}",
-                        idx + 1,
-                        sql_statements.len(),
-                        migration.version,
-                        migration.name,
-                        e
-                    ));
-                }
-            }
-        }
-
-        info!(
-            schema = schema_name,
-            version = &migration.version,
-            total_statements = sql_statements.len(),
-            "✅ All migration SQL statements executed successfully"
-        );
-
-        // Record migration
+        // Record migration in schema_migrations table
         let record_query = format!(
             r#"
             INSERT INTO {}.schema_migrations (version, name, checksum)
             VALUES ($1, $2, $3)
+            ON CONFLICT (version) DO NOTHING
             "#,
             schema_name
         );
@@ -439,20 +279,28 @@ impl MigrationRunner {
             name = &migration.name,
             "Recording migration in schema_migrations table"
         );
+        
         match sqlx::query(&record_query)
             .bind(&migration.version)
             .bind(&migration.name)
             .bind(&migration.checksum)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await
         {
             Ok(result) => {
-                info!(
-                    schema = schema_name,
-                    version = &migration.version,
-                    rows_affected = result.rows_affected(),
-                    "✅ Migration recorded in schema_migrations"
-                );
+                if result.rows_affected() > 0 {
+                    info!(
+                        schema = schema_name,
+                        version = &migration.version,
+                        "✅ Migration recorded in schema_migrations"
+                    );
+                } else {
+                    warn!(
+                        schema = schema_name,
+                        version = &migration.version,
+                        "Migration already recorded in schema_migrations (skipped)"
+                    );
+                }
             }
             Err(e) => {
                 error!(
@@ -461,7 +309,6 @@ impl MigrationRunner {
                     error = %e,
                     "Failed to record migration in schema_migrations"
                 );
-                let _ = tx.rollback().await;
                 return Err(anyhow::anyhow!(
                     "Failed to record migration {} - {}: {}",
                     migration.version,
@@ -471,31 +318,11 @@ impl MigrationRunner {
             }
         }
 
-        // Commit transaction
-        info!(schema = schema_name, "Committing transaction");
-        match tx.commit().await {
-            Ok(_) => {
-                info!(
-                    schema = schema_name,
-                    version = &migration.version,
-                    "✅ Transaction committed, migration applied successfully"
-                );
-            }
-            Err(e) => {
-                error!(
-                    schema = schema_name,
-                    version = &migration.version,
-                    error = %e,
-                    "Failed to commit transaction"
-                );
-                return Err(anyhow::anyhow!(
-                    "Failed to commit transaction for migration {} - {}: {}",
-                    migration.version,
-                    migration.name,
-                    e
-                ));
-            }
-        }
+        info!(
+            schema = schema_name,
+            version = &migration.version,
+            "✅ Migration applied successfully"
+        );
 
         Ok(())
     }
@@ -527,6 +354,221 @@ impl MigrationRunner {
             migrations: applied.into_iter().map(|m| m.into()).collect(),
         })
     }
+
+    /// Execute migration via psql subprocess (most reliable method)
+    /// This uses PostgreSQL's native parser, guaranteeing 100% compatibility with all SQL syntax
+    /// The migration is wrapped in a transaction (BEGIN/COMMIT) for atomicity
+    async fn execute_migration_via_psql(
+        &self,
+        schema_name: &str,
+        migration: &Migration,
+    ) -> Result<()> {
+        info!(
+            schema = schema_name,
+            version = &migration.version,
+            "Executing migration via psql subprocess"
+        );
+
+        // Get DATABASE_URL
+        let database_url = std::env::var("DATABASE_URL")
+            .context("DATABASE_URL environment variable not set")?;
+
+        // Check if psql is available
+        let psql_check = Command::new("which")
+            .arg("psql")
+            .output();
+        
+        match psql_check {
+            Ok(output) if output.status.success() => {
+                let psql_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                info!(
+                    schema = schema_name,
+                    version = &migration.version,
+                    psql_path = %psql_path,
+                    "psql found at: {}",
+                    psql_path
+                );
+            }
+            _ => {
+                warn!(
+                    schema = schema_name,
+                    version = &migration.version,
+                    "psql not found in PATH - migration may fail"
+                );
+            }
+        }
+
+        // Create temporary SQL file with migration content
+        // Wrap in transaction and set search_path
+        let full_sql = format!(
+            "-- Migration: {} ({})\n\
+             -- Schema: {}\n\
+             BEGIN;\n\
+             SET search_path TO {}, public;\n\n\
+             {}\n\n\
+             COMMIT;",
+            migration.name,
+            migration.version,
+            schema_name,
+            schema_name,
+            migration.sql
+        );
+        
+        let mut temp_file = NamedTempFile::new()
+            .context("Failed to create temporary SQL file")?;
+        
+        temp_file
+            .write_all(full_sql.as_bytes())
+            .context("Failed to write migration SQL to temporary file")?;
+        
+        // Flush to ensure data is written
+        temp_file.flush()
+            .context("Failed to flush temporary SQL file")?;
+        
+        let temp_path = temp_file.path().to_str()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get temporary file path"))?;
+
+        info!(
+            schema = schema_name,
+            version = &migration.version,
+            temp_file = %temp_path,
+            "Executing migration via psql from temporary file"
+        );
+
+        // Execute via psql
+        // Use -v ON_ERROR_STOP=1 to stop on first error
+        // Use -q for quiet mode (less verbose output)
+        // Note: psql accepts PostgreSQL connection URLs directly as the first argument
+        let output = Command::new("psql")
+            .arg(&database_url)
+            .arg("-f")
+            .arg(temp_path)
+            .arg("-v")
+            .arg("ON_ERROR_STOP=1")
+            .arg("-q") // Quiet mode
+            .output()
+            .with_context(|| {
+                format!(
+                    "Failed to execute psql command. DATABASE_URL: {}, temp_file: {}",
+                    database_url.split('@').next().unwrap_or("(hidden)"),
+                    temp_path
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let exit_code = output.status.code().unwrap_or(-1);
+            
+            // Log full error details
+            error!(
+                schema = schema_name,
+                version = &migration.version,
+                exit_code = exit_code,
+                stderr_length = stderr.len(),
+                stdout_length = stdout.len(),
+                "psql execution failed with exit code {}",
+                exit_code
+            );
+            
+            // Log stderr and stdout if they contain useful information
+            if !stderr.is_empty() {
+                error!(
+                    schema = schema_name,
+                    version = &migration.version,
+                    stderr = %stderr,
+                    "psql stderr output"
+                );
+            }
+            if !stdout.is_empty() {
+                warn!(
+                    schema = schema_name,
+                    version = &migration.version,
+                    stdout = %stdout,
+                    "psql stdout output"
+                );
+            }
+            
+            // Try to extract line number from error message
+            let line_number = Self::extract_line_number_from_error(&stderr);
+            let error_context = if let Some(line) = line_number {
+                format!("Error at line {}", line)
+            } else {
+                format!("psql exited with code {}", exit_code)
+            };
+            
+            // Provide SQL preview for context
+            let sql_preview = migration.sql
+                .lines()
+                .take(10)
+                .collect::<Vec<_>>()
+                .join("\n");
+            
+            // Build comprehensive error message
+            let mut error_msg = format!(
+                "Migration {} ({}) failed via psql:\n{}\n\nExit code: {}\n",
+                migration.version,
+                migration.name,
+                error_context,
+                exit_code
+            );
+            
+            if !stderr.is_empty() {
+                error_msg.push_str(&format!("STDERR:\n{}\n\n", stderr));
+            }
+            if !stdout.is_empty() {
+                error_msg.push_str(&format!("STDOUT:\n{}\n\n", stdout));
+            }
+            error_msg.push_str(&format!("SQL preview (first 10 lines):\n{}", sql_preview));
+            
+            return Err(anyhow::anyhow!(error_msg));
+        }
+
+        info!(
+            schema = schema_name,
+            version = &migration.version,
+            "✅ Migration executed successfully via psql"
+        );
+
+        Ok(())
+    }
+    
+    /// Extract line number from psql error message
+    /// PostgreSQL errors often include "LINE X:" in the error message
+    fn extract_line_number_from_error(error_msg: &str) -> Option<usize> {
+        // Look for patterns like "LINE 5:" or "line 10:" or "at line 15"
+        for line in error_msg.lines() {
+            // Try "LINE X:" pattern
+            if let Some(pos) = line.find("LINE ") {
+                let rest = &line[pos + 5..];
+                if let Some(end) = rest.find(':') {
+                    if let Ok(num) = rest[..end].trim().parse::<usize>() {
+                        return Some(num);
+                    }
+                }
+            }
+            // Try "line X:" pattern (lowercase)
+            if let Some(pos) = line.find("line ") {
+                let rest = &line[pos + 5..];
+                if let Some(end) = rest.find(':') {
+                    if let Ok(num) = rest[..end].trim().parse::<usize>() {
+                        return Some(num);
+                    }
+                }
+            }
+            // Try "at line X" pattern
+            if let Some(pos) = line.find("at line ") {
+                let rest = &line[pos + 8..];
+                if let Some(end) = rest.find(|c: char| c.is_whitespace() || c == ':') {
+                    if let Ok(num) = rest[..end].trim().parse::<usize>() {
+                        return Some(num);
+                    }
+                }
+            }
+        }
+        None
+    }
+
 }
 
 /// Migration status response

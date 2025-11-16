@@ -27,6 +27,7 @@ ring = { workspace = true }
 sha2 = { workspace = true }
 aes-gcm = { workspace = true }
 hex = { workspace = true }
+rand = { workspace = true }
 
 # JWT
 jsonwebtoken = "9.3"

@@ -75,6 +75,9 @@ pub struct ChallengeRunner {
         >,
     >, // Validator challenge status for get_validator_count
     redis_client: Option<Arc<crate::redis_client::RedisClient>>, // Redis client for job progress logging
+    validator_connections: Option<
+        Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::state::ValidatorConnection>>>,
+    >, // Validator connections for getting connected validators
 }
 
 impl ChallengeRunner {
@@ -96,6 +99,9 @@ impl ChallengeRunner {
             >,
         >,
         redis_client: Option<Arc<crate::redis_client::RedisClient>>,
+        validator_connections: Option<
+            Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::state::ValidatorConnection>>>,
+        >,
     ) -> Self {
         let migration_runner = MigrationRunner::new(db_pool.clone());
         let cvm_manager = CvmManager::new(config.vmm_url.clone(), config.gateway_url.clone());
@@ -109,6 +115,7 @@ impl ChallengeRunner {
             orm_gateway,
             validator_challenge_status,
             redis_client,
+            validator_connections,
         }
     }
 
@@ -258,8 +265,11 @@ impl ChallengeRunner {
             // Create channels to receive db_version and migrations from WebSocket
             let (db_version_tx, db_version_rx) = tokio::sync::oneshot::channel();
             let (migrations_tx, migrations_rx) = tokio::sync::oneshot::channel();
+            let (migrations_applied_tx, migrations_applied_rx) = tokio::sync::oneshot::channel();
             let db_version_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(db_version_tx)));
             let migrations_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_tx)));
+            let migrations_applied_receiver_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_rx)));
+            let migrations_applied_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_tx)));
 
             let mut client = ChallengeWsClient::new(ws_url.clone(), platform_api_id);
 
@@ -281,17 +291,28 @@ impl ChallengeRunner {
                 // Create Arc wrapper for migration runner
                 let migration_runner = Arc::new(self.migration_runner.clone());
 
-                client = client.with_challenge(
-                    challenge_id_for_ws.clone(),
-                    challenge_name_for_ws.clone(),
-                    orm_gateway.clone(),
-                    Some(migration_runner),
-                    Some(schema_name_arc.clone()),
-                    Some(db_version_sender_arc.clone()),
-                    Some(migrations_sender_arc.clone()),
-                    self.validator_challenge_status.clone(),
-                    self.redis_client.clone(),
-                );
+                let mut client_with_challenge = client
+                    .with_challenge(
+                        challenge_id_for_ws.clone(),
+                        challenge_name_for_ws.clone(),
+                        orm_gateway.clone(),
+                        Some(migration_runner),
+                        Some(schema_name_arc.clone()),
+                        Some(db_version_sender_arc.clone()),
+                        Some(migrations_sender_arc.clone()),
+                        Some(migrations_applied_receiver_arc.clone()),
+                        Some(migrations_applied_sender_arc.clone()),
+                        self.validator_challenge_status.clone(),
+                        self.redis_client.clone(),
+                    )
+                    .with_compose_hash(compose_hash.to_string());
+                
+                // Set validator_connections if available
+                if let Some(validator_conns) = &self.validator_connections {
+                    client_with_challenge.validator_connections = Some(validator_conns.clone());
+                }
+                
+                client = client_with_challenge;
             }
 
             // Start WebSocket connection in background to get db_version and migrations, then handle ORM bridge
@@ -464,14 +485,29 @@ impl ChallengeRunner {
                             schema = &final_schema_name,
                             "✅ Migrations applied successfully to schema"
                         );
+                        // Note: migrations_applied signal is now sent from WebSocket task
+                        // This is just a fallback in case WebSocket task doesn't send it
+                        info!("Migrations applied in mod.rs (WebSocket task should have already applied them)");
                     }
                     Err(e) => {
                         warn!(error = %e, schema = &final_schema_name, "Failed to apply migrations (non-fatal)");
                         warn!("Challenge will continue without migrations - this is not a fatal error");
+                        // Note: migrations_applied signal is now sent from WebSocket task
+                        warn!("Migration failed in mod.rs (WebSocket task should have already handled it)");
                     }
                 }
             } else {
                 info!("No migrations to apply (challenge has no migrations or migrations not received)");
+                // Signal that migrations are "applied" (none to apply) so orm_ready can be sent
+                // Use the sender from the arc (same one passed to WebSocket task)
+                let mut sender_opt = migrations_applied_sender_arc.lock().await;
+                if let Some(sender) = sender_opt.take() {
+                    if sender.send(()).is_err() {
+                        warn!("Failed to send migrations_applied signal (receiver may have dropped)");
+                    } else {
+                        info!("✅ Sent migrations_applied signal (no migrations to apply) - orm_ready can now be sent");
+                    }
+                }
             }
 
             // The WebSocket connection is already running in ws_task_handle
@@ -571,6 +607,19 @@ impl ChallengeRunner {
             .filter(|c| c.is_running)
             .cloned()
             .collect()
+    }
+
+    /// Get schema name for a challenge by challenge_id
+    /// Returns None if challenge is not running or not found
+    pub async fn get_schema_for_challenge(&self, challenge_id: &str) -> Option<String> {
+        let challenges = self.challenges.read().await;
+        // Search through all challenges to find one with matching challenge_id
+        for instance in challenges.values() {
+            if instance.challenge_id == challenge_id && instance.is_running {
+                return Some(instance.schema_name.clone());
+            }
+        }
+        None
     }
 
     /// Get challenge status by compose_hash
