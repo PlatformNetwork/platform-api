@@ -6,7 +6,8 @@ use axum::{
     Router,
 };
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::orm_gateway::ORMQuery;
 use crate::state::AppState;
@@ -91,29 +92,86 @@ async fn execute_orm_query_with_challenge(
         "DEPRECATED: ORM query via HTTP - please use WebSocket connection instead"
     );
 
-    // Resolve schema from ChallengeRunner if available (Platform API managed challenges)
+    // Resolve schema: {challenge_name}_v{db_version}
     if query.schema.is_none() {
-        if let Some(challenge_runner) = &state.challenge_runner {
-            if let Some(schema_name) = challenge_runner.get_schema_for_challenge(&challenge_id).await {
-                query.schema = Some(schema_name);
+        // Get challenge_name from database using challenge_id
+        let challenge_name = if let Some(pool) = &state.database_pool {
+            // Try to parse challenge_id as UUID first
+            let challenge_uuid = if let Ok(uuid) = uuid::Uuid::parse_str(&challenge_id) {
+                uuid
+            } else {
+                // If not a UUID, treat it as challenge name directly
+                // Normalize challenge name (replace hyphens with underscores for schema)
+                let schema_name = challenge_id.replace('-', "_");
+                let db_version = query.db_version.unwrap_or(1);
+                query.schema = Some(format!("{}_v{}", schema_name, db_version));
                 info!(
                     challenge_id = &challenge_id,
                     schema = &query.schema.as_ref().unwrap(),
-                    "Resolved schema from ChallengeRunner"
+                    "Resolved schema from challenge_id (non-UUID) and db_version"
                 );
-            } else {
-                // Fallback: challenge not managed by Platform API, use default format
-                // This handles validator-managed challenges that aren't in ChallengeRunner
-                warn!(
-                    challenge_id = &challenge_id,
-                    "Challenge not found in ChallengeRunner, using fallback schema format"
-                );
-                query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+                // Use read-only ORM gateway
+                let gateway = state.orm_gateway.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+                let gateway = gateway.read().await;
+                let result = gateway
+                    .execute_read_query(query)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to execute ORM query: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+                return Ok(Json(serde_json::to_value(result).map_err(|e| {
+                    error!("Failed to serialize ORM result: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?));
+            };
+
+            // Query database for challenge name
+            let name_result: Option<String> = sqlx::query_scalar(
+                "SELECT name FROM challenges WHERE id = $1 LIMIT 1"
+            )
+            .bind(challenge_uuid)
+            .fetch_optional(pool.as_ref())
+            .await
+            .map_err(|e| {
+                error!("Failed to query challenge name from database: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            match name_result {
+                Some(name) => name,
+                None => {
+                    error!(
+                        challenge_id = &challenge_id,
+                        "Challenge not found in database"
+                    );
+                    return Err(StatusCode::NOT_FOUND);
+                }
             }
         } else {
-            // No ChallengeRunner available, use fallback
-            query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
-        }
+            error!(
+                challenge_id = &challenge_id,
+                "Database pool not available"
+            );
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        };
+
+        // Get db_version from query, default to 1 if not provided
+        let db_version = query.db_version.unwrap_or(1);
+
+        // Normalize challenge name (replace hyphens with underscores for schema)
+        let normalized_name = challenge_name.replace('-', "_");
+
+        // Construct schema: {challenge_name}_v{db_version}
+        query.schema = Some(format!("{}_v{}", normalized_name, db_version));
+
+        info!(
+            challenge_id = &challenge_id,
+            challenge_name = &challenge_name,
+            db_version = db_version,
+            schema = &query.schema.as_ref().unwrap(),
+            "Resolved schema from challenge_name and db_version"
+        );
     }
 
     info!(

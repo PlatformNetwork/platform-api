@@ -11,6 +11,7 @@ pub mod emissions;
 pub mod errors;
 pub mod job;
 pub mod pool;
+pub mod vm_compose;
 
 pub use attestation::*;
 pub use challenge::*;
@@ -19,6 +20,7 @@ pub use emissions::*;
 pub use errors::*;
 pub use job::*;
 pub use pool::*;
+pub use vm_compose::*;
 
 // Type aliases for backwards compatibility
 pub type TSubnetConfig = SubnetConfig;

@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sp_core::{
     crypto::{Pair, Ss58Codec},
@@ -17,6 +17,44 @@ use tracing::{error, info, warn};
 
 use crate::routes::metagraph::get_metagraph_cache;
 use crate::state::AppState;
+
+/// Serialize JSON with sorted keys to match Python's json.dumps(..., sort_keys=True)
+/// This ensures signature verification works correctly between Python client and Rust server
+fn serialize_json_canonical(value: &Value) -> Result<String> {
+    // Convert Value to sorted Value, then serialize
+    let sorted_value = sort_json_keys(value);
+    // Use serde_json with compact format (no spaces) to match Python's separators=(",", ":")
+    let mut writer = Vec::new();
+    {
+        let mut ser = serde_json::Serializer::new(&mut writer);
+        serde::Serialize::serialize(&sorted_value, &mut ser)?;
+    }
+    Ok(String::from_utf8(writer)?)
+}
+
+/// Recursively sort JSON object keys to match Python's sort_keys=True behavior
+fn sort_json_keys(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            // Convert to BTreeMap to sort keys
+            let mut sorted_map = Map::new();
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            
+            for k in keys {
+                if let Some(v) = map.get(&k) {
+                    sorted_map.insert(k, sort_json_keys(v));
+                }
+            }
+            Value::Object(sorted_map)
+        }
+        Value::Array(arr) => {
+            let sorted_arr: Vec<Value> = arr.iter().map(sort_json_keys).collect();
+            Value::Array(sorted_arr)
+        }
+        _ => value.clone(),
+    }
+}
 
 /// Signature verification error
 #[derive(Debug)]
@@ -120,7 +158,9 @@ async fn verify_miner_signature(
     }
 
     // Calculate SHA256 hash of JSON body
-    let body_json_str = serde_json::to_string(body_json)
+    // IMPORTANT: Must match Python's json.dumps(body, separators=(",", ":"), sort_keys=True)
+    // Rust's serde_json::to_string doesn't sort keys by default, so we need to sort them
+    let body_json_str = serialize_json_canonical(body_json)
         .context("Failed to serialize body JSON")
         .map_err(|_| SignatureError::InvalidSignature)?;
 

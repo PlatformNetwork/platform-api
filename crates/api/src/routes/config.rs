@@ -23,6 +23,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/subnet/config/backups", get(list_backups))
         .route("/subnet/config/backups/:id", get(get_backup))
         .route("/subnet/config/history", get(get_config_history))
+        .route("/config/compose/validator_vm", get(get_validator_vm_compose))
 }
 
 /// Get subnet configuration
@@ -187,4 +188,22 @@ pub async fn get_config_history(
 pub struct CreateBackupRequest {
     pub reason: String,
     pub tags: Option<Vec<String>>,
+}
+
+/// Get validator VM compose configuration
+pub async fn get_validator_vm_compose(
+    State(state): State<AppState>,
+) -> Result<Json<platform_api_models::VmComposeResponse>, StatusCode> {
+    let config = state
+        .storage
+        .get_vm_compose_config("validator_vm")
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    Ok(Json(platform_api_models::VmComposeResponse {
+        vm_type: config.vm_type,
+        compose_content: config.compose_content,
+        description: config.description,
+        updated_at: config.updated_at,
+    }))
 }

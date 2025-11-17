@@ -1257,30 +1257,90 @@ async fn handle_orm_query_with_challenge(
     validator_hotkey: &str,
 ) -> anyhow::Result<serde_json::Value> {
     use crate::orm_gateway::ORMQuery;
+    use uuid::Uuid;
 
     // Parse the query
     let mut query: ORMQuery =
         serde_json::from_value(query_data.clone()).context("Failed to parse ORM query")?;
 
-        // Resolve schema from ChallengeRunner if not provided
-        if query.schema.is_none() {
-            if let Some(challenge_runner) = &state.challenge_runner {
-                if let Some(schema_name) = challenge_runner.get_schema_for_challenge(challenge_id).await {
-                    query.schema = Some(schema_name.clone());
-                } else {
-                    // Fallback: challenge not managed by Platform API, use default format
-                    warn!(
+    // Resolve schema: {challenge_name}_v{db_version}
+    if query.schema.is_none() {
+        // Get challenge_name from database using challenge_id
+        let challenge_name = if let Some(pool) = &state.database_pool {
+            // Try to parse challenge_id as UUID first
+            let challenge_uuid = if let Ok(uuid) = Uuid::parse_str(challenge_id) {
+                uuid
+            } else {
+                // If not a UUID, treat it as challenge name directly
+                // Normalize challenge name (replace hyphens with underscores for schema)
+                let schema_name = challenge_id.replace('-', "_");
+                let db_version = query.db_version.unwrap_or(1);
+                query.schema = Some(format!("{}_v{}", schema_name, db_version));
+                info!(
+                    validator_hotkey = validator_hotkey,
+                    challenge_id = challenge_id,
+                    schema = &query.schema.as_ref().unwrap(),
+                    "Resolved schema from challenge_id (non-UUID) and db_version"
+                );
+                // Execute the query using normal gateway (permissions control access)
+                let gateway = orm_gateway.read().await;
+                let result = gateway
+                    .execute_query(query)
+                    .await
+                    .context("Failed to execute ORM query")?;
+                return Ok(serde_json::to_value(result)?);
+            };
+
+            // Query database for challenge name
+            let name_result: Option<String> = sqlx::query_scalar(
+                "SELECT name FROM challenges WHERE id = $1 LIMIT 1"
+            )
+            .bind(challenge_uuid)
+            .fetch_optional(pool.as_ref())
+            .await
+            .context("Failed to query challenge name from database")?;
+
+            match name_result {
+                Some(name) => name,
+                None => {
+                    error!(
                         validator_hotkey = validator_hotkey,
                         challenge_id = challenge_id,
-                        "Challenge not found in ChallengeRunner, using fallback schema format"
+                        "Challenge not found in database"
                     );
-                    query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
+                    return Err(anyhow::anyhow!(
+                        "Challenge not found: {}",
+                        challenge_id
+                    ));
                 }
-            } else {
-                // No ChallengeRunner available, use fallback
-                query.schema = Some(format!("challenge_{}", challenge_id.replace('-', "_")));
             }
-        }
+        } else {
+            error!(
+                validator_hotkey = validator_hotkey,
+                challenge_id = challenge_id,
+                "Database pool not available"
+            );
+            return Err(anyhow::anyhow!("Database pool not available"));
+        };
+
+        // Get db_version from query, default to 1 if not provided
+        let db_version = query.db_version.unwrap_or(1);
+
+        // Normalize challenge name (replace hyphens with underscores for schema)
+        let normalized_name = challenge_name.replace('-', "_");
+
+        // Construct schema: {challenge_name}_v{db_version}
+        query.schema = Some(format!("{}_v{}", normalized_name, db_version));
+
+        info!(
+            validator_hotkey = validator_hotkey,
+            challenge_id = challenge_id,
+            challenge_name = &challenge_name,
+            db_version = db_version,
+            schema = &query.schema.as_ref().unwrap(),
+            "Resolved schema from challenge_name and db_version"
+        );
+    }
 
     // Execute the query using normal gateway (permissions control access)
     let gateway = orm_gateway.read().await;

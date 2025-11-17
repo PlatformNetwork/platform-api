@@ -55,7 +55,7 @@ Platform Network consists of several interconnected components that work togethe
 > [!NOTE]
 > Platform API requires Rust 1.70 or higher and a PostgreSQL database.
 
-### Docker Compose (Recommended)
+### Docker Compose - Development
 
 ```bash
 docker-compose up --build
@@ -75,6 +75,54 @@ To stop:
 ```bash
 docker-compose down
 ```
+
+### Docker Compose - Production (HTTPS)
+
+The production setup uses nginx as a reverse proxy with HTTPS support for `api.platform.network`.
+
+**1. Generate or obtain SSL certificates:**
+
+For testing (self-signed):
+```bash
+./generate-test-certs.sh
+```
+
+For production (Let's Encrypt):
+```bash
+# See certs/README.md for detailed instructions
+sudo certbot certonly --standalone -d api.platform.network
+sudo cp /etc/letsencrypt/live/api.platform.network/*.pem ./certs/
+```
+
+**2. Configure environment variables:**
+
+Create a `.env` file with required variables:
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/platform
+STORAGE_ENCRYPTION_KEY=your-encryption-key
+KBS_ENCRYPTION_KEY=your-kbs-encryption-key
+```
+
+**3. Start the production stack:**
+
+```bash
+docker-compose -f docker-compose.production.yml up -d
+```
+
+**4. Verify HTTPS is working:**
+
+```bash
+curl -I https://api.platform.network/health
+```
+
+The production setup includes:
+- ✅ HTTPS with TLS 1.2/1.3
+- ✅ Automatic HTTP to HTTPS redirect
+- ✅ Security headers (HSTS, CSP, etc.)
+- ✅ Rate limiting
+- ✅ WebSocket support
+- ✅ CORS configuration
+- ✅ Gzip compression
 
 ### Docker Direct
 
@@ -103,19 +151,29 @@ cargo run --release --bin platform-api-server
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `RUST_LOG` | Log level | `info` |
+| `ENVIRONMENT_MODE` | Environment mode (`dev` or `prod`) | `dev` |
 | `TEE_ENFORCED` | Enable TEE verification | `false` |
-| `PORT` | HTTP server port | `3000` |
+| `SERVER_HOST` | Server bind address | `0.0.0.0` |
+| `SERVER_PORT` | HTTP server port | `3000` |
+| `PUBLIC_URL` | Public URL for API (used in production with HTTPS) | - |
 | `METRICS_PORT` | Prometheus metrics port | `9090` |
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://localhost/platform` |
 | `STORAGE_BACKEND` | Storage backend type | `postgres` |
 | `STORAGE_ENCRYPTION_KEY` | Encryption key for storage (required in production) | - |
 | `JWT_SECRET` | JWT signing secret (required in production) | - |
 | `KBS_ENCRYPTION_KEY` | Key Broker Service encryption key (required in production) | - |
+| `DEV_MODE` | Enable development mode features | `true` |
 
 ### Ports
 
+#### Development
 - **3000**: HTTP API server
 - **9090**: Prometheus metrics endpoint
+
+#### Production (with nginx reverse proxy)
+- **80**: HTTP (redirects to HTTPS)
+- **443**: HTTPS API server (proxied to internal port 3000)
+- **9090**: Prometheus metrics (internal only)
 
 ## Documentation
 

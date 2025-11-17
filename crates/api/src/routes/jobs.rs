@@ -255,30 +255,19 @@ pub async fn get_pending_jobs(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Get payloads from database for each job to extract submission_id and miner_hotkey
+    // Extract payload information from JobMetadata (now includes payload field)
     let mut jobs_with_payloads = Vec::new();
     
-    if let Some(pool) = &state.database_pool {
         for job in &jobs.jobs {
-            // Query payload for this job (job.id is already a Uuid since Id = Uuid)
-            let payload_result: Option<serde_json::Value> = sqlx::query_scalar(
-                "SELECT payload FROM jobs WHERE id = $1"
-            )
-            .bind(job.id)
-            .fetch_optional(pool.as_ref())
-            .await
-            .ok()
-            .flatten();
-            
             // Extract submission_id and miner_hotkey from payload
-            let submission_id = payload_result
+        let submission_id = job.payload
                 .as_ref()
                 .and_then(|p| p.get("session_id"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| job.id.to_string()); // Fallback to job id
             
-            let miner_hotkey = payload_result
+        let miner_hotkey = job.payload
                 .as_ref()
                 .and_then(|p| p.get("agent_hash"))
                 .and_then(|v| v.as_str())
@@ -293,19 +282,6 @@ pub async fn get_pending_jobs(
                 "status": format!("{:?}", job.status).to_lowercase(),
                 "created_at": job.created_at.to_rfc3339(),
             }));
-        }
-    } else {
-        // Fallback: use job metadata without payload extraction
-        for job in &jobs.jobs {
-            jobs_with_payloads.push(serde_json::json!({
-                "id": job.id.to_string(),
-                "challenge_id": job.challenge_id.to_string(),
-                "submission_id": job.id.to_string(), // Use job id as fallback
-                "miner_hotkey": "unknown",
-                "status": format!("{:?}", job.status).to_lowercase(),
-                "created_at": job.created_at.to_rfc3339(),
-            }));
-        }
     }
 
     Ok(Json(serde_json::json!({

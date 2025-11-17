@@ -189,6 +189,7 @@ pub struct ORMQuery {
     pub operation: String, // "select", "count", "insert", "update", "delete"
     pub table: String,
     pub schema: Option<String>,
+    pub db_version: Option<u32>, // Database version for schema resolution
     pub columns: Option<Vec<String>>,
     pub filters: Option<Vec<QueryFilter>>,
     pub order_by: Option<Vec<OrderBy>>,

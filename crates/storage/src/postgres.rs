@@ -960,4 +960,37 @@ impl StorageBackend for PostgresStorageBackend {
             gpu_count,
         })
     }
+
+    async fn get_vm_compose_config(&self, vm_type: &str) -> Result<VmComposeConfig> {
+        #[derive(Debug, FromRow)]
+        struct VmComposeRow {
+            id: Uuid,
+            vm_type: String,
+            compose_content: String,
+            description: Option<String>,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+        }
+
+        let row = sqlx::query_as::<_, VmComposeRow>(
+            r#"
+            SELECT id, vm_type, compose_content, description, created_at, updated_at
+            FROM vm_compose_configs
+            WHERE vm_type = $1
+        "#,
+        )
+        .bind(vm_type)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("VM compose config not found for type: {}", vm_type))?;
+
+        Ok(VmComposeConfig {
+            id: row.id,
+            vm_type: row.vm_type,
+            compose_content: row.compose_content,
+            description: row.description,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
 }

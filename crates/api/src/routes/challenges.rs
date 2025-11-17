@@ -23,6 +23,7 @@ pub fn create_router() -> Router<AppState> {
     Router::new()
         .route("/challenges", get(list_challenges).post(create_challenge))
         .route("/challenges/active", get(get_active_challenges))
+        .route("/challenges/specs", get(get_challenge_specs))
         .route("/challenges/public", get(list_challenges_public))
         .route("/challenges/debug", get(debug_challenges))
         .route(
@@ -391,6 +392,26 @@ pub async fn get_active_challenges(
             "mechanism_id": row.mechanism_id as u8,
             "emission_share": row.emission_share,
         })).collect::<Vec<_>>()
+    })))
+}
+
+/// Get full challenge specs (for validator polling)
+pub async fn get_challenge_specs(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    tracing::info!("get_challenge_specs: retrieving full challenge specifications");
+    
+    // Use the same list_challenges method as WebSocket
+    let challenges = state.list_challenges().await;
+    
+    tracing::info!(
+        "get_challenge_specs: returning {} challenge specs",
+        challenges.len()
+    );
+    
+    Ok(Json(serde_json::json!({
+        "type": "challenges:list",
+        "challenges": challenges
     })))
 }
 

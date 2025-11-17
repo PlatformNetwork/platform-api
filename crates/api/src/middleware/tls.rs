@@ -33,13 +33,10 @@ impl RaTlsVerifier {
         if !tee_enforced {
             tracing::error!("🚨 TEE_ENFORCED=false DETECTED - REJECTING CONNECTION");
             tracing::error!("   ⚠️  UNSAFE CONFIGURATION - DO NOT USE IN PRODUCTION");
-            // Return attestation=None to signal rejection
-            return Ok(PeerAttestation {
-                cert_der: cert_der.to_vec(),
-                attestation: None,
-                special_usage: None,
-                app_id: None,
-            });
+            // Actually reject the connection
+            return Err(anyhow::anyhow!(
+                "TEE enforcement is disabled - connection rejected for security"
+            ));
         }
 
         tracing::debug!("TEE verification ENABLED - Verifying client attestation");

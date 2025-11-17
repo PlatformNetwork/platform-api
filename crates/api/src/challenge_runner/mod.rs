@@ -609,18 +609,6 @@ impl ChallengeRunner {
             .collect()
     }
 
-    /// Get schema name for a challenge by challenge_id
-    /// Returns None if challenge is not running or not found
-    pub async fn get_schema_for_challenge(&self, challenge_id: &str) -> Option<String> {
-        let challenges = self.challenges.read().await;
-        // Search through all challenges to find one with matching challenge_id
-        for instance in challenges.values() {
-            if instance.challenge_id == challenge_id && instance.is_running {
-                return Some(instance.schema_name.clone());
-            }
-        }
-        None
-    }
 
     /// Get challenge status by compose_hash
     pub async fn get_challenge_status_by_compose_hash(

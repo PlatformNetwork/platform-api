@@ -30,6 +30,7 @@ struct JobRow {
     timeout_at: Option<DateTime<Utc>>,
     retry_count: i32,
     max_retries: i32,
+    payload: Option<JsonValue>,
 }
 
 impl From<JobRow> for JobMetadata {
@@ -68,6 +69,7 @@ impl From<JobRow> for JobMetadata {
             timeout_at: row.timeout_at,
             retry_count: row.retry_count as u32,
             max_retries: row.max_retries as u32,
+            payload: row.payload,
         }
     }
 }
@@ -147,6 +149,7 @@ impl SchedulerService {
                 .map(|secs| now + chrono::Duration::seconds(secs as i64)),
             retry_count: 0,
             max_retries: request.max_retries.unwrap_or(3),
+            payload: Some(request.payload.clone()),
         };
 
         if let Some(pool) = &self.database_pool {
@@ -220,7 +223,7 @@ impl SchedulerService {
                         r#"
                         SELECT id, challenge_id, validator_hotkey, status, priority, runtime,
                                created_at, claimed_at, started_at, completed_at, timeout_at,
-                               retry_count, max_retries
+                               retry_count, max_retries, payload
                         FROM jobs
                         WHERE status = $1 AND challenge_id = $2
                         ORDER BY created_at DESC
@@ -238,7 +241,7 @@ impl SchedulerService {
                         r#"
                         SELECT id, challenge_id, validator_hotkey, status, priority, runtime,
                                created_at, claimed_at, started_at, completed_at, timeout_at,
-                               retry_count, max_retries
+                               retry_count, max_retries, payload
                         FROM jobs
                         WHERE challenge_id = $1
                         ORDER BY created_at DESC
@@ -256,7 +259,7 @@ impl SchedulerService {
                     r#"
                     SELECT id, challenge_id, validator_hotkey, status, priority, runtime,
                            created_at, claimed_at, started_at, completed_at, timeout_at,
-                           retry_count, max_retries
+                           retry_count, max_retries, payload
                     FROM jobs
                     WHERE status = $1
                     ORDER BY created_at DESC
@@ -273,7 +276,7 @@ impl SchedulerService {
                     r#"
                     SELECT id, challenge_id, validator_hotkey, status, priority, runtime,
                            created_at, claimed_at, started_at, completed_at, timeout_at,
-                           retry_count, max_retries
+                           retry_count, max_retries, payload
                     FROM jobs
                     ORDER BY created_at DESC
                     LIMIT $1 OFFSET $2
@@ -378,7 +381,7 @@ impl SchedulerService {
                 r#"
                 SELECT id, challenge_id, validator_hotkey, status, priority, runtime,
                        created_at, claimed_at, started_at, completed_at, timeout_at,
-                       retry_count, max_retries
+                       retry_count, max_retries, payload
                 FROM jobs WHERE id = $1
                 "#,
             )
@@ -417,7 +420,7 @@ impl SchedulerService {
                 )
                 RETURNING id, challenge_id, validator_hotkey, status, priority, runtime,
                           created_at, claimed_at, started_at, completed_at, timeout_at,
-                          retry_count, max_retries
+                          retry_count, max_retries, payload
                 "#,
             )
             .bind(request.validator_hotkey.to_string())
@@ -515,7 +518,7 @@ impl SchedulerService {
                 WHERE id = $3 AND status = 'pending'
                 RETURNING id, challenge_id, validator_hotkey, status, priority, runtime,
                           created_at, claimed_at, started_at, completed_at, timeout_at,
-                          retry_count, max_retries
+                          retry_count, max_retries, payload
                 "#,
             )
             .bind(request.validator_hotkey.to_string())

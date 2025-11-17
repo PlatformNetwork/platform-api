@@ -112,6 +112,9 @@ pub trait StorageBackend: Send + Sync {
 
     // Capacity methods
     async fn get_pool_capacity(&self, pool_id: Uuid) -> Result<PoolCapacitySummary>;
+
+    // VM Compose Config methods
+    async fn get_vm_compose_config(&self, vm_type: &str) -> Result<VmComposeConfig>;
 }
 
 /// Basic storage backend implementation
@@ -554,6 +557,10 @@ impl StorageBackend for MemoryStorageBackend {
             has_tdx,
             gpu_count,
         })
+    }
+
+    async fn get_vm_compose_config(&self, _vm_type: &str) -> Result<VmComposeConfig> {
+        Err(anyhow::anyhow!("VM compose config not available in memory backend"))
     }
 }
 

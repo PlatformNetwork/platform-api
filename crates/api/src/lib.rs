@@ -43,8 +43,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(routes::jobs::create_router())
         .merge(routes::attestation::create_router())
         .merge(routes::results::create_router())
-        // NOTE: Config routes for subnet config/backups are disabled - functionality not implemented in storage backend
-        // .merge(routes::config::create_router())
+        .merge(routes::config::create_router())
         .merge(routes::emissions::create_router())
         .merge(routes::health::create_router())
         // NOTE: Pools and nodes routes are disabled - functionality not implemented in storage backend

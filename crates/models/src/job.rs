@@ -38,6 +38,8 @@ pub struct JobMetadata {
     pub timeout_at: Option<DateTime<Utc>>,
     pub retry_count: u32,
     pub max_retries: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 /// Job claim request

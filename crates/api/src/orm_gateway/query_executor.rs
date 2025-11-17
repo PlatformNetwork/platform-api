@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 use sqlx::{Column, PgPool, Row, TypeInfo};
 use std::str::FromStr;
 use std::time::Instant;
 use tracing::info;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use super::{ColumnValue, ORMQuery, QueryFilter, QueryResult};
 
@@ -540,15 +541,47 @@ impl QueryExecutor {
             // Get column names and values
             for (i, column) in row.columns().iter().enumerate() {
                 let column_name = column.name();
-                let value: serde_json::Value = match column.type_info().name() {
-                    "INT4" | "INT8" => {
+                let type_name = column.type_info().name();
+                
+                let value: serde_json::Value = match type_name {
+                    // Integer types
+                    "INT2" => {
+                        // SMALLINT
+                        if let Ok(v) = row.try_get::<i16, _>(i) {
+                            serde_json::Value::Number((v as i64).into())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    "INT4" => {
+                        // INTEGER
+                        if let Ok(v) = row.try_get::<i32, _>(i) {
+                            serde_json::Value::Number((v as i64).into())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    "INT8" => {
+                        // BIGINT
                         if let Ok(v) = row.try_get::<i64, _>(i) {
                             serde_json::Value::Number(v.into())
                         } else {
                             serde_json::Value::Null
                         }
                     }
-                    "FLOAT4" | "FLOAT8" => {
+                    // Floating-point types
+                    "FLOAT4" => {
+                        // REAL
+                        if let Ok(v) = row.try_get::<f32, _>(i) {
+                            serde_json::Number::from_f64(v as f64)
+                                .map(serde_json::Value::Number)
+                                .unwrap_or(serde_json::Value::Null)
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    "FLOAT8" => {
+                        // DOUBLE PRECISION
                         if let Ok(v) = row.try_get::<f64, _>(i) {
                             serde_json::Number::from_f64(v)
                                 .map(serde_json::Value::Number)
@@ -557,6 +590,21 @@ impl QueryExecutor {
                             serde_json::Value::Null
                         }
                     }
+                    "NUMERIC" => {
+                        // NUMERIC/DECIMAL - try as f64 first, then i64
+                        if let Ok(v) = row.try_get::<f64, _>(i) {
+                            serde_json::Number::from_f64(v)
+                                .map(serde_json::Value::Number)
+                                .unwrap_or(serde_json::Value::Null)
+                        } else if let Ok(v) = row.try_get::<i64, _>(i) {
+                            serde_json::Value::Number(v.into())
+                        } else if let Ok(v) = row.try_get::<i32, _>(i) {
+                            serde_json::Value::Number((v as i64).into())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    // Boolean type
                     "BOOL" => {
                         if let Ok(v) = row.try_get::<bool, _>(i) {
                             serde_json::Value::Bool(v)
@@ -564,20 +612,46 @@ impl QueryExecutor {
                             serde_json::Value::Null
                         }
                     }
-                    "TEXT" | "VARCHAR" => {
+                    // String types
+                    "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => {
                         if let Ok(v) = row.try_get::<String, _>(i) {
                             serde_json::Value::String(v)
                         } else {
                             serde_json::Value::Null
                         }
                     }
+                    // Timestamp types
+                    "TIMESTAMP" => {
+                        // TIMESTAMP without timezone
+                        if let Ok(v) = row.try_get::<NaiveDateTime, _>(i) {
+                            serde_json::Value::String(v.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
                     "TIMESTAMPTZ" => {
+                        // TIMESTAMP with timezone
                         if let Ok(v) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(i) {
                             serde_json::Value::String(v.to_rfc3339())
                         } else {
                             serde_json::Value::Null
                         }
                     }
+                    "DATE" => {
+                        if let Ok(v) = row.try_get::<chrono::NaiveDate, _>(i) {
+                            serde_json::Value::String(v.format("%Y-%m-%d").to_string())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    "TIME" => {
+                        if let Ok(v) = row.try_get::<chrono::NaiveTime, _>(i) {
+                            serde_json::Value::String(v.format("%H:%M:%S%.f").to_string())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    // JSON types
                     "JSON" | "JSONB" => {
                         if let Ok(v) = row.try_get::<serde_json::Value, _>(i) {
                             v
@@ -585,7 +659,50 @@ impl QueryExecutor {
                             serde_json::Value::Null
                         }
                     }
-                    _ => serde_json::Value::Null,
+                    // UUID type
+                    "UUID" => {
+                        if let Ok(v) = row.try_get::<uuid::Uuid, _>(i) {
+                            serde_json::Value::String(v.to_string())
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    // Bytea (binary data)
+                    "BYTEA" => {
+                        if let Ok(v) = row.try_get::<Vec<u8>, _>(i) {
+                            // Encode as base64 for JSON transport
+                            serde_json::Value::String(base64_engine.encode(&v))
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                    // Fallback: try common types in order
+                    _ => {
+                        // Try to infer the type
+                        if let Ok(v) = row.try_get::<bool, _>(i) {
+                            serde_json::Value::Bool(v)
+                        } else if let Ok(v) = row.try_get::<i64, _>(i) {
+                            serde_json::Value::Number(v.into())
+                        } else if let Ok(v) = row.try_get::<i32, _>(i) {
+                            serde_json::Value::Number((v as i64).into())
+                        } else if let Ok(v) = row.try_get::<f64, _>(i) {
+                            serde_json::Number::from_f64(v)
+                                .map(serde_json::Value::Number)
+                                .unwrap_or(serde_json::Value::Null)
+                        } else if let Ok(v) = row.try_get::<String, _>(i) {
+                            serde_json::Value::String(v)
+                        } else if let Ok(v) = row.try_get::<serde_json::Value, _>(i) {
+                            v
+                        } else {
+                            // Last resort: NULL
+                            tracing::warn!(
+                                "Unhandled PostgreSQL type '{}' for column '{}', returning NULL",
+                                type_name,
+                                column_name
+                            );
+                            serde_json::Value::Null
+                        }
+                    }
                 };
 
                 json_row.insert(column_name.to_string(), value);
