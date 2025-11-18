@@ -87,9 +87,12 @@ pub async fn list_validators_public(
     // Add connected validators
     for conn in connected_validators {
         let stats = stats_map.remove(&conn.validator_hotkey);
-        
+
         let jobs_processed = stats.as_ref().map(|s| s.total_jobs as usize).unwrap_or(0);
-        let completed_jobs = stats.as_ref().map(|s| s.completed_jobs as usize).unwrap_or(0);
+        let completed_jobs = stats
+            .as_ref()
+            .map(|s| s.completed_jobs as usize)
+            .unwrap_or(0);
         let success_rate = if jobs_processed > 0 {
             (completed_jobs as f64 / jobs_processed as f64) * 100.0
         } else {
@@ -200,9 +203,3 @@ pub async fn list_validators_public(
         validators,
     }))
 }
-
-
-
-
-
-

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::PgPool;
 use std::collections::HashMap;
 use tracing::{info, warn};
 

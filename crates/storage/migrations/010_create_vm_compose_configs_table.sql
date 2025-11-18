@@ -52,3 +52,5 @@ volumes:
     'Default Docker Compose configuration for validator VM'
 ) ON CONFLICT (vm_type) DO NOTHING;
 
+
+

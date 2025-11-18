@@ -16,7 +16,7 @@ impl Default for StorageConfig {
             s3_bucket: None,
             s3_region: None,
             minio_endpoint: None,
-            encryption_key: "change-me-in-production".to_string(),
+            encryption_key: "disabled".to_string(),
         }
     }
 }

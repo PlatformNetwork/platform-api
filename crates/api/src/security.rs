@@ -1,10 +1,5 @@
-use crate::compose_hash;
 use anyhow::{Context, Result};
-use chrono::Utc;
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
-use std::sync::Arc;
-use tokio::sync::OnceCell;
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 
 pub struct PlatformSecurity {
     signing_key: SigningKey,
@@ -14,90 +9,83 @@ pub struct PlatformSecurity {
 
 impl PlatformSecurity {
     pub fn new() -> Result<Self> {
-        // Try to calculate compose hash from docker-compose.yml file
-        // If file is not found, use a default hash (dev mode fallback)
-        let compose_hash = match compose_hash::get_compose_hash_with_env_mode() {
-            Ok(hash) => {
-                tracing::info!("Calculated compose hash from docker-compose.yml: {}", hash);
-                hash
-            }
-            Err(e) => {
-                // Use fallback hash instead of failing
-                let fallback_hash = format!("dev-fallback-{}", chrono::Utc::now().timestamp());
-                tracing::warn!(
-                    "Could not calculate compose hash from docker-compose.yml: {}. Using fallback hash: {}",
-                    e,
-                    fallback_hash
-                );
-                fallback_hash
-            }
-        };
+        // Generate random compose hash (not verified, randomized)
+        use rand::RngCore;
+        let mut random_bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut random_bytes);
+        let compose_hash = format!("random-{}", hex::encode(random_bytes));
 
-        Self::new_with_compose_hash(&compose_hash)
+        tracing::info!(
+            "Generated random compose hash (not verified): {}",
+            compose_hash
+        );
+
+        Self::new_with_random_keys(&compose_hash)
     }
 
     /// Initialize from TDX attestation or calculated compose hash (call this at startup)
+    /// Now uses random keys (not verified)
     pub async fn init_from_tdx() -> Result<Self> {
-        // Check if we're in a TDX CVM environment
-        let tee_enforced =
-            std::env::var("TEE_ENFORCED").unwrap_or_else(|_| "false".to_string()) == "true";
-        let dev_mode = std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
+        // Generate random compose hash (not verified, randomized)
+        use rand::RngCore;
+        let mut random_bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut random_bytes);
+        let compose_hash = format!("random-{}", hex::encode(random_bytes));
 
-        let compose_hash = if tee_enforced && !dev_mode {
-            // In production with TEE enforced, try to get compose_hash from TDX attestation
-            match Self::get_compose_hash_from_dstack().await {
-                Ok(hash) => {
-                    tracing::info!("Got compose_hash from TDX attestation: {}", hash);
-                    hash
-                }
-                Err(e) => {
-                    // Fail fast in production - no fallback allowed
-                    return Err(anyhow::anyhow!(
-                        "Security error: Cannot get compose_hash from TDX attestation in production mode. Error: {}. Please ensure TEE_ENFORCED=true only when running in TDX CVM.",
-                        e
-                    ));
-                }
-            }
-        } else {
-            // In dev mode or when TEE is not enforced, try to calculate from docker-compose.yml
-            // If file is not found, use a default hash (dev mode fallback)
-            match compose_hash::get_compose_hash_with_env_mode() {
-                Ok(hash) => {
-                    tracing::info!("Calculated compose hash from docker-compose.yml: {}", hash);
-                    hash
-                }
-                Err(e) => {
-                    // In dev mode, use a fallback hash instead of failing
-                    let fallback_hash = format!("dev-fallback-{}", chrono::Utc::now().timestamp());
-                    tracing::warn!(
-                        "Could not calculate compose hash from docker-compose.yml: {}. Using fallback hash: {}",
-                        e,
-                        fallback_hash
-                    );
-                    fallback_hash
-                }
-            }
-        };
+        tracing::info!(
+            "Generated random compose hash (not verified): {}",
+            compose_hash
+        );
 
-        Self::new_with_compose_hash(&compose_hash)
+        Self::new_with_random_keys(&compose_hash)
     }
 
-    pub fn new_with_compose_hash(compose_hash: &str) -> Result<Self> {
-        // Generate deterministic key pair based on compose_hash
-        // This ensures the same Docker image always generates the same key pair
-        let seed = Self::derive_seed_from_compose_hash(compose_hash);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let verifying_key = signing_key.verifying_key();
+    /// Generate random keys (not deterministic, not verified)
+    pub fn new_with_random_keys(compose_hash: &str) -> Result<Self> {
+        // Generate random key pair (not deterministic)
+        use rand::rngs::OsRng;
+        use rand::RngCore;
 
-        tracing::info!("Generated security keys from compose_hash");
-        tracing::info!("   Compose hash: {}", compose_hash);
-        tracing::info!("   Public key: {}", hex::encode(verifying_key.to_bytes()));
+        // Generate random 32-byte secret key
+        let mut secret_key_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut secret_key_bytes);
+
+        // Create SigningKey directly from bytes (like validator does)
+        let signing_key = SigningKey::from_bytes(&secret_key_bytes);
+        let verifying_key = signing_key.verifying_key();
+        let public_key_bytes = verifying_key.to_bytes();
+
+        // Validate that public key was generated correctly
+        if public_key_bytes.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Failed to generate public key: key is empty"
+            ));
+        }
+        if public_key_bytes.len() != 32 {
+            return Err(anyhow::anyhow!(
+                "Invalid public key length: expected 32 bytes, got {} bytes",
+                public_key_bytes.len()
+            ));
+        }
+
+        tracing::info!("Generated random security keys (not verified)");
+        tracing::info!("   Compose hash: {} (random, not verified)", compose_hash);
+        tracing::info!(
+            "   Public key: {} ({} bytes)",
+            hex::encode(&public_key_bytes),
+            public_key_bytes.len()
+        );
 
         Ok(Self {
             signing_key,
             verifying_key,
             compose_hash: compose_hash.to_string(),
         })
+    }
+
+    /// Legacy method - kept for compatibility but uses random keys
+    pub fn new_with_compose_hash(compose_hash: &str) -> Result<Self> {
+        Self::new_with_random_keys(compose_hash)
     }
 
     /// Get compose_hash from dstack TDX attestation
@@ -112,7 +100,9 @@ impl PlatformSecurity {
 
         // Call GetQuote endpoint
         let url = format!("{}/prpc/GetQuote", guest_agent_url);
-        let report_data = b"platform-api-attestation".to_vec();
+        let report_data = b"
+        platform-api-attestation"
+            .to_vec();
         let payload = serde_json::json!({
             "report_data": hex::encode(report_data)
         });
@@ -146,17 +136,7 @@ impl PlatformSecurity {
         Ok(compose_hash)
     }
 
-    /// Derive a 32-byte seed from compose_hash
-    fn derive_seed_from_compose_hash(compose_hash: &str) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"platform-api-security");
-        hasher.update(compose_hash.as_bytes());
-        let hash = hasher.finalize();
-
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&hash[..32]);
-        seed
-    }
+    // Removed derive_seed_from_compose_hash - keys are now random, not deterministic
 
     /// Sign a message with the private key
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
@@ -188,12 +168,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deterministic_key_generation() {
-        // Same commit should generate same key
+    fn test_random_key_generation() {
+        // Keys should be random (different each time)
         let sec1 = PlatformSecurity::new().unwrap();
         let sec2 = PlatformSecurity::new().unwrap();
 
-        assert_eq!(sec1.get_public_key(), sec2.get_public_key());
+        // Keys should be different (randomized)
+        assert_ne!(sec1.get_public_key(), sec2.get_public_key());
     }
 
     #[test]

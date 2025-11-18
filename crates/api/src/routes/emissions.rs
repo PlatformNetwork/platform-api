@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use uuid::Uuid;
@@ -43,10 +43,7 @@ pub fn create_router() -> Router<AppState> {
             get(get_miner_emission_metrics),
         )
         .route("/emissions/report", get(get_emission_report))
-        .route(
-            "/emissions/subnet/:netuid",
-            get(get_subnet_emissions),
-        )
+        .route("/emissions/subnet/:netuid", get(get_subnet_emissions))
         .route(
             "/emissions/subnet/:netuid/mechanisms",
             get(get_subnet_mechanisms_emissions),
@@ -244,13 +241,10 @@ pub async fn get_subnet_emissions(
     State(state): State<AppState>,
     Path(netuid): Path<u16>,
 ) -> Result<Json<SubnetEmissions>, StatusCode> {
-    let bittensor = state
-        .bittensor
-        .as_ref()
-        .ok_or_else(|| {
-            error!("BittensorService not available");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let bittensor = state.bittensor.as_ref().ok_or_else(|| {
+        error!("BittensorService not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Get challenge registry
     let challenge_registry = state.challenge_registry.read().await;
@@ -277,13 +271,10 @@ pub async fn get_subnet_mechanisms_emissions(
     State(state): State<AppState>,
     Path(netuid): Path<u16>,
 ) -> Result<Json<Vec<MechanismEmissions>>, StatusCode> {
-    let bittensor = state
-        .bittensor
-        .as_ref()
-        .ok_or_else(|| {
-            error!("BittensorService not available");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let bittensor = state.bittensor.as_ref().ok_or_else(|| {
+        error!("BittensorService not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Get subnet emissions first
     let challenge_registry = state.challenge_registry.read().await;
@@ -320,13 +311,10 @@ pub async fn get_mechanism_emissions(
     State(state): State<AppState>,
     Path((netuid, mechanism_id)): Path<(u16, u8)>,
 ) -> Result<Json<MechanismEmissions>, StatusCode> {
-    let bittensor = state
-        .bittensor
-        .as_ref()
-        .ok_or_else(|| {
-            error!("BittensorService not available");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let bittensor = state.bittensor.as_ref().ok_or_else(|| {
+        error!("BittensorService not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Get challenge registry
     let challenge_registry = state.challenge_registry.read().await;
@@ -353,13 +341,10 @@ pub async fn get_challenge_emissions_from_subnet(
     State(state): State<AppState>,
     Path((netuid, challenge_id)): Path<(u16, Uuid)>,
 ) -> Result<Json<ChallengeEmissions>, StatusCode> {
-    let bittensor = state
-        .bittensor
-        .as_ref()
-        .ok_or_else(|| {
-            error!("BittensorService not available");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let bittensor = state.bittensor.as_ref().ok_or_else(|| {
+        error!("BittensorService not available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Get challenge registry
     let challenge_registry = state.challenge_registry.read().await;

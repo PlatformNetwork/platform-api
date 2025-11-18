@@ -231,9 +231,9 @@ pub enum ValidatorChallengeState {
     Inactive,
     Failed,
     Provisioning,
-    Created,    // Challenge created but not yet active
-    Probing,    // Challenge is being probed for health
-    Recycling,  // Challenge is being recycled
+    Created,   // Challenge created but not yet active
+    Probing,   // Challenge is being probed for health
+    Recycling, // Challenge is being recycled
 }
 
 /// Validator challenge status

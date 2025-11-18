@@ -2,11 +2,11 @@ use anyhow::{anyhow, Result};
 use bittensor_rs::chain::BittensorClient;
 use bittensor_rs::queries::subnets;
 use platform_api_models::{
-    ChallengeEmissionBreakdown, ChallengeEmissions, MechanismEmissionBreakdown,
-    MechanismEmissions, SubnetEmissions,
+    ChallengeEmissionBreakdown, ChallengeEmissions, MechanismEmissionBreakdown, MechanismEmissions,
+    SubnetEmissions,
 };
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -23,8 +23,10 @@ pub struct BittensorService {
     netuid: u16,
     cache_ttl: Duration,
     subnet_cache: Arc<RwLock<Option<EmissionCacheEntry<SubnetEmissions>>>>,
-    mechanism_cache: Arc<RwLock<std::collections::HashMap<u8, EmissionCacheEntry<MechanismEmissions>>>>,
-    challenge_cache: Arc<RwLock<std::collections::HashMap<Uuid, EmissionCacheEntry<ChallengeEmissions>>>>,
+    mechanism_cache:
+        Arc<RwLock<std::collections::HashMap<u8, EmissionCacheEntry<MechanismEmissions>>>>,
+    challenge_cache:
+        Arc<RwLock<std::collections::HashMap<Uuid, EmissionCacheEntry<ChallengeEmissions>>>>,
 }
 
 impl BittensorService {
@@ -38,9 +40,13 @@ impl BittensorService {
         });
 
         let client = if let Some(endpoint) = endpoint {
-            BittensorClient::new(&endpoint)
-                .await
-                .map_err(|e| anyhow!("Failed to create Bittensor client with endpoint {}: {}", endpoint, e))?
+            BittensorClient::new(&endpoint).await.map_err(|e| {
+                anyhow!(
+                    "Failed to create Bittensor client with endpoint {}: {}",
+                    endpoint,
+                    e
+                )
+            })?
         } else {
             BittensorClient::with_default()
                 .await
@@ -94,7 +100,10 @@ impl BittensorService {
             }
         }
 
-        debug!(netuid = self.netuid, "Calculating subnet emissions from chain");
+        debug!(
+            netuid = self.netuid,
+            "Calculating subnet emissions from chain"
+        );
 
         // Get block emission (in RAO)
         // Subtensor emission schedule:
@@ -105,7 +114,11 @@ impl BittensorService {
         // if not set. However, if storage() returns None, the entry doesn't exist in runtime metadata.
         let block_emission_rao = match subnets::block_emission(&self.client).await {
             Ok(Some(emission)) => {
-                debug!(emission_rao = emission, emission_tao = emission as f64 / 1e9, "Retrieved block emission from chain");
+                debug!(
+                    emission_rao = emission,
+                    emission_tao = emission as f64 / 1e9,
+                    "Retrieved block emission from chain"
+                );
                 emission
             }
             Ok(None) => {
@@ -128,7 +141,10 @@ impl BittensorService {
         let tempo = match subnets::tempo(&self.client, self.netuid).await {
             Ok(Some(t)) => t,
             Ok(None) => {
-                warn!(netuid = self.netuid, "Tempo not available from chain, using default value");
+                warn!(
+                    netuid = self.netuid,
+                    "Tempo not available from chain, using default value"
+                );
                 100u64 // Default tempo if not available
             }
             Err(e) => {
@@ -143,7 +159,8 @@ impl BittensorService {
             .unwrap_or(0.0);
 
         // Calculate subnet block emission (RAO per block)
-        let subnet_block_emission_rao = (block_emission_rao as f64 * subnet_emission_percent) as u64;
+        let subnet_block_emission_rao =
+            (block_emission_rao as f64 * subnet_emission_percent) as u64;
 
         // Calculate daily emissions: (blocks_per_day) * (emission_per_block)
         // Blocks per day = (86400 seconds / block_time_seconds)
@@ -366,4 +383,3 @@ impl Clone for BittensorService {
         }
     }
 }
-

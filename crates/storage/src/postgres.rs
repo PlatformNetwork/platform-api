@@ -968,13 +968,14 @@ impl StorageBackend for PostgresStorageBackend {
             vm_type: String,
             compose_content: String,
             description: Option<String>,
+            required_env: sqlx::types::JsonValue,
             created_at: DateTime<Utc>,
             updated_at: DateTime<Utc>,
         }
 
         let row = sqlx::query_as::<_, VmComposeRow>(
             r#"
-            SELECT id, vm_type, compose_content, description, created_at, updated_at
+            SELECT id, vm_type, compose_content, description, required_env, created_at, updated_at
             FROM vm_compose_configs
             WHERE vm_type = $1
         "#,
@@ -984,11 +985,16 @@ impl StorageBackend for PostgresStorageBackend {
         .await?
         .ok_or_else(|| anyhow::anyhow!("VM compose config not found for type: {}", vm_type))?;
 
+        // Parse required_env from JSONB to Vec<String>
+        let required_env: Vec<String> =
+            serde_json::from_value(row.required_env).unwrap_or_else(|_| vec![]);
+
         Ok(VmComposeConfig {
             id: row.id,
             vm_type: row.vm_type,
             compose_content: row.compose_content,
             description: row.description,
+            required_env,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

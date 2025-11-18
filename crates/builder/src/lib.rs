@@ -4,6 +4,7 @@ use platform_api_models::{
     ChallengeMetadata, ChallengePort, ChallengeResources, ChallengeStatus, ChallengeVisibility,
     CreateChallengeRequest, UpdateChallengeRequest,
 };
+use serde_yaml;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::BTreeMap;
@@ -28,6 +29,7 @@ impl BuilderService {
     }
 
     /// Calculate compose_hash from docker-compose file
+    /// Uses the same normalization as compose_hash.rs for consistency
     fn calculate_compose_hash(&self, challenge_name: &str) -> Result<String> {
         info!("Calculating compose_hash for challenge: {}", challenge_name);
 
@@ -76,29 +78,8 @@ impl BuilderService {
         let content = file_content
             .context("Could not find docker-compose file for challenge. Compose hash will be generated from name.")?;
 
-        // Normalize content (remove comments, normalize whitespace)
-        let normalized = self.normalize_compose_content(&content);
-
-        // Calculate SHA256 hash
-        let mut hasher = Sha256::new();
-        hasher.update(normalized.as_bytes());
-        let hash = hasher.finalize();
-        let hash_hex = hex::encode(hash);
-
-        // Add environment mode prefix
-        let env_mode = std::env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| {
-            if std::env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true" {
-                "dev".to_string()
-            } else {
-                "prod".to_string()
-            }
-        });
-
-        let final_hash = if env_mode == "dev" {
-            format!("dev-{}", hash_hex)
-        } else {
-            hash_hex
-        };
+        // Use the same normalization as compose_hash.rs
+        let final_hash = Self::calculate_compose_hash_from_content(&content)?;
 
         info!(
             "Calculated compose hash from: {} -> {}",
@@ -108,36 +89,62 @@ impl BuilderService {
         Ok(final_hash)
     }
 
-    /// Normalize docker-compose content for consistent hashing
-    fn normalize_compose_content(&self, content: &str) -> String {
-        let mut normalized = String::new();
+    /// Calculate SHA256 hash from docker-compose file content
+    ///
+    /// This function calculates the hash using the dstack-specific normalization:
+    /// - Parses the content as JSON or YAML
+    /// - Sets docker_config to an empty object
+    /// - Serializes to compact JSON
+    /// - Calculates SHA256 hash
+    ///
+    /// This matches the normalization used in platform-api/crates/api/src/compose_hash.rs
+    fn calculate_compose_hash_from_content(content: &str) -> Result<String> {
+        // Normalize the content for consistent hashing
+        let normalized = Self::normalize_compose_content(content)?;
 
-        for line in content.lines() {
-            let line_trimmed = line.trim();
+        // Calculate SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(normalized.as_bytes());
+        let hash = hasher.finalize();
+        let hash_hex = hex::encode(hash);
 
-            if line_trimmed.is_empty() || line_trimmed.starts_with('#') {
-                continue;
+        info!("Calculated compose hash: {}", hash_hex);
+
+        Ok(hash_hex)
+    }
+
+    /// Normalize docker-compose content for consistent hashing.
+    ///
+    /// This function implements the dstack-specific normalization for compose manifests.
+    /// It handles both YAML (from docker-compose files) and JSON formats.
+    /// The content is converted to JSON, then `docker_config` is set to an empty object,
+    /// and the result is serialized as compact JSON.
+    ///
+    /// This matches the normalization used in platform-api/crates/api/src/compose_hash.rs
+    fn normalize_compose_content(content: &str) -> Result<String> {
+        // Try to parse as JSON first (expected format for dstack compose manifests)
+        let mut json_value: serde_json::Value = match serde_json::from_str(content) {
+            Ok(value) => value,
+            Err(_) => {
+                // If JSON parsing fails, try YAML (format from docker-compose files)
+                let yaml_value: serde_yaml::Value = serde_yaml::from_str(content)
+                    .context("Failed to parse compose content as JSON or YAML")?;
+
+                // Convert YAML Value to JSON Value
+                serde_json::to_value(yaml_value).context("Failed to convert YAML to JSON")?
             }
+        };
 
-            let line_without_comment = if let Some(comment_pos) = line_trimmed.find('#') {
-                let before_comment = &line_trimmed[..comment_pos];
-                let quote_count = before_comment.matches('"').count() % 2;
-                if quote_count == 0 {
-                    before_comment.trim_end()
-                } else {
-                    line_trimmed
-                }
-            } else {
-                line_trimmed
-            };
-
-            if !line_without_comment.is_empty() {
-                normalized.push_str(line_without_comment);
-                normalized.push('\n');
-            }
+        // The dstack RTMR3 calculation for compose_hash requires setting docker_config to an empty object.
+        if let Some(obj) = json_value.as_object_mut() {
+            obj.insert(
+                "docker_config".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
         }
 
-        normalized
+        // Serialize back to a compact string, which is what's hashed.
+        serde_json::to_string(&json_value).context("Failed to serialize normalized compose content")
     }
 
     pub async fn create_challenge(

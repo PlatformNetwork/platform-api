@@ -1,58 +1,31 @@
-use crate::{AttestationConfig, VerificationResult};
+use crate::config::TdxConfig;
+use crate::VerificationResult;
 use anyhow::{Context, Result};
-use dcap_qvl::{collateral, verify::verify};
 use platform_api_models::AttestationRequest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha384};
 use std::collections::HashMap;
-use std::time::Duration;
+use tracing::info;
 
-/// TDX verifier implementation using dcap-qvl
+#[derive(Debug)]
 pub struct TdxVerifier {
-    config: AttestationConfig,
+    config: TdxConfig,
     client: reqwest::Client,
 }
 
-#[derive(Debug, Deserialize)]
-struct VerifiedQuote {
-    report: VerifiedReport,
-    status: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct VerifiedReport {
-    #[serde(rename = "TD10")]
-    td10: Option<TDReport>,
-    #[serde(rename = "TD15")]
-    td15: Option<TDReport>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TDReport {
-    mr_td: String,
-    rt_mr0: String,
-    rt_mr1: String,
-    rt_mr2: String,
-    rt_mr3: String,
-    report_data: String,
-}
-
-#[derive(Debug, Deserialize)]
+// Event log structures
+#[derive(Serialize, Deserialize, Debug)]
 struct EventLogEvent {
-    imr: u8,
-    event_type: u32,
-    digest: String,
     event: String,
     event_payload: String,
 }
 
+const DEFAULT_PCCS_URL: &str = "https://pccs.bittensor.com/sgx/certification/v4/";
+
 impl TdxVerifier {
-    pub fn new(config: AttestationConfig) -> Self {
-        // Use a default timeout of 30 seconds for verification requests
+    pub fn new(config: TdxConfig) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .expect("Failed to create HTTP client");
 
         Self { config, client }
     }
@@ -62,32 +35,105 @@ impl TdxVerifier {
         request: &AttestationRequest,
         event_log: Option<&str>,
     ) -> Result<VerificationResult> {
-        tracing::info!("Verifying TDX attestation using dcap-qvl");
+        tracing::info!("Verifying TDX attestation with dcap-qvl");
 
         let quote = request
             .quote
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing quote"))?;
 
-        // Verify quote using dcap-qvl
-        let verified_quote = match self.verify_quote(quote).await {
-            Ok(vq) => vq,
+        // Basic validation: quote should not be empty
+        if quote.is_empty() {
+            return Ok(VerificationResult {
+                is_valid: false,
+                measurements: request.measurements.clone(),
+                app_id: None,
+                instance_id: None,
+                device_id: None,
+                error: Some("Quote is empty".to_string()),
+            });
+        }
+
+        tracing::info!("Quote received: {} bytes", quote.len());
+
+        // Verify the quote using dcap-qvl
+        let pccs_url = self.config.pccs_url.as_deref().unwrap_or(DEFAULT_PCCS_URL);
+
+        // Get collateral from PCCS or Intel PCS
+        let collateral = match dcap_qvl::collateral::get_collateral(pccs_url, quote).await {
+            Ok(c) => c,
             Err(e) => {
-                tracing::error!("dcap-qvl verification failed: {}", e);
-                // Reject attestation if verification tool is not available
+                tracing::warn!(
+                    "Failed to get collateral from PCCS, trying Intel PCS: {}",
+                    e
+                );
+                // Fallback to Intel PCS
+                dcap_qvl::collateral::get_collateral_from_pcs(quote)
+                    .await
+                    .context("Failed to get collateral from Intel PCS")?
+            }
+        };
+
+        // Verify the quote
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+
+        let verified_report = dcap_qvl::verify::verify(quote, &collateral, now)
+            .context("Failed to verify TDX quote")?;
+
+        tracing::info!(
+            "TDX quote verified successfully - TCB Status: {}",
+            verified_report.status
+        );
+
+        // Only accept quotes with valid TCB status
+        let valid_statuses = ["UpToDate", "SWHardeningNeeded", "ConfigurationNeeded"];
+        let is_valid = valid_statuses.contains(&verified_report.status.as_str());
+
+        if !is_valid {
+            return Ok(VerificationResult {
+                is_valid: false,
+                measurements: request.measurements.clone(),
+                app_id: None,
+                instance_id: None,
+                device_id: None,
+                error: Some(format!("Invalid TCB status: {}", verified_report.status)),
+            });
+        }
+
+        // Verify nonce binding if nonce is provided
+        if !request.nonce.is_empty() {
+            // Parse the quote to get report data
+            let quote_struct = dcap_qvl::quote::Quote::parse(quote)
+                .map_err(|e| anyhow::anyhow!("Failed to parse quote: {:?}", e))?;
+
+            // Get report data based on report type
+            let report_data = match &quote_struct.report {
+                dcap_qvl::quote::Report::SgxEnclave(enclave_report) => &enclave_report.report_data,
+                dcap_qvl::quote::Report::TD10(td_report) => &td_report.report_data,
+                dcap_qvl::quote::Report::TD15(td_report) => &td_report.base.report_data,
+            };
+
+            // Verify nonce binding: SHA256(nonce) must be in first 32 bytes of report_data
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&request.nonce);
+            let expected_nonce_hash = hasher.finalize();
+
+            // TDX places SHA256(nonce) in the first 32 bytes of report_data
+            if report_data.len() < 32 || &report_data[..32] != &expected_nonce_hash[..] {
                 return Ok(VerificationResult {
                     is_valid: false,
                     measurements: request.measurements.clone(),
                     app_id: None,
                     instance_id: None,
                     device_id: None,
-                    error: Some(format!("dcap-qvl verification failed: {}", e)),
+                    error: Some("Nonce binding verification failed: report_data does not match SHA256(nonce)".to_string()),
                 });
             }
-        };
-
-        // Extract MRs from verified quote
-        let mrs = self.extract_mrs(&verified_quote)?;
+            info!("✅ Nonce binding verified successfully");
+        }
 
         // Extract app info from event log
         let (app_id, instance_id, compose_hash) = self.extract_app_info(event_log)?;
@@ -96,7 +142,7 @@ impl TdxVerifier {
             app_id = ?app_id,
             instance_id = ?instance_id,
             compose_hash = ?compose_hash,
-            "Attestation verified successfully"
+            "Attestation verified successfully with dcap-qvl"
         );
 
         Ok(VerificationResult {
@@ -109,142 +155,93 @@ impl TdxVerifier {
         })
     }
 
-    async fn verify_quote(&self, quote: &[u8]) -> Result<VerifiedQuote> {
-        // Get collateral from Intel PCS
-        let collateral_data = collateral::get_collateral_from_pcs(quote)
-            .await
-            .context("Failed to get collateral from Intel PCS")?;
-
-        // Get current timestamp
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Verify quote
-        let tcb = verify(quote, &collateral_data, now)
-            .map_err(|e| anyhow::anyhow!("Failed to verify quote: {:?}", e))?;
-
-        tracing::info!("Quote verified, status: {:?}", tcb.status);
-
-        // For now, just verify that the signature is valid
-        // In a production environment, you would extract and compare MRs
-        let verified = VerifiedQuote {
-            report: VerifiedReport {
-                td10: Some(TDReport {
-                    mr_td: String::new(),
-                    rt_mr0: String::new(),
-                    rt_mr1: String::new(),
-                    rt_mr2: String::new(),
-                    rt_mr3: String::new(),
-                    report_data: String::new(),
-                }),
-                td15: None,
-            },
-            status: format!("{:?}", tcb.status),
-        };
-
-        Ok(verified)
-    }
-
-    fn extract_mrs(&self, verified: &VerifiedQuote) -> Result<HashMap<String, String>> {
-        let report = if let Some(td10) = &verified.report.td10 {
-            td10
-        } else if let Some(td15) = &verified.report.td15 {
-            td15
-        } else {
-            return Err(anyhow::anyhow!("No TD10 or TD15 report found"));
-        };
-
-        let mut mrs = HashMap::new();
-        mrs.insert("mr_td".to_string(), report.mr_td.clone());
-        mrs.insert("rt_mr0".to_string(), report.rt_mr0.clone());
-        mrs.insert("rt_mr1".to_string(), report.rt_mr1.clone());
-        mrs.insert("rt_mr2".to_string(), report.rt_mr2.clone());
-        mrs.insert("rt_mr3".to_string(), report.rt_mr3.clone());
-        mrs.insert("report_data".to_string(), report.report_data.clone());
-
-        Ok(mrs)
-    }
-
     fn extract_app_info(
         &self,
         event_log: Option<&str>,
     ) -> Result<(Option<String>, Option<String>, Option<String>)> {
-        let event_log_str = match event_log {
+        let event_log = match event_log {
             Some(log) => log,
             None => return Ok((None, None, None)),
         };
 
-        // Parse event log JSON
-        let event_log_json: serde_json::Value =
-            serde_json::from_str(event_log_str).context("Failed to parse event log")?;
-
-        let mut app_id = None;
-        let mut instance_id = None;
-        let mut compose_hash = None;
-
-        if let Some(events) = event_log_json.as_array() {
-            for event in events {
-                if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
-                    if let Some(payload) = event.get("event_payload").and_then(|p| p.as_str()) {
-                        match event_type {
-                            "app-id" => app_id = Some(payload.to_string()),
-                            "instance-id" => instance_id = Some(payload.to_string()),
-                            "compose-hash" => compose_hash = Some(payload.to_string()),
-                            _ => {}
-                        }
-                    }
-                }
-            }
+        let events: Vec<EventLogEvent> = serde_json::from_str(event_log)?;
+        let mut event_map = HashMap::new();
+        for event in events {
+            event_map.insert(event.event, event.event_payload);
         }
+
+        let app_id = event_map.get("app-id").cloned();
+        let instance_id = event_map.get("instance-id").cloned();
+        let compose_hash = event_map.get("compose-hash").cloned();
 
         Ok((app_id, instance_id, compose_hash))
     }
 
+    // Replay RTMR calculation (for future use with TDX RTMR verification)
     fn replay_rtmr(&self, history: &[String]) -> String {
-        const INIT_MR: &str = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+        use sha2::{Digest, Sha256, Sha384};
 
-        if history.is_empty() {
-            return INIT_MR.to_string();
+        let mut rtmr = vec![0u8; 48]; // RTMR is 384 bits
+
+        for entry in history {
+            let mut hasher = Sha256::new();
+            hasher.update(entry.as_bytes());
+            let digest = hasher.finalize();
+
+            let mut combined = rtmr.clone();
+            combined.extend_from_slice(&digest);
+
+            let mut hasher384 = Sha384::new();
+            hasher384.update(&combined);
+            let result = hasher384.finalize();
+
+            rtmr.copy_from_slice(&result[..48]);
         }
 
-        let mut mr = hex::decode(INIT_MR).unwrap();
-
-        for content in history {
-            let mut content_bytes = hex::decode(content).unwrap();
-            // Pad to 48 bytes if shorter
-            if content_bytes.len() < 48 {
-                content_bytes.resize(48, 0);
-            }
-
-            // mr = sha384(concat(mr, content))
-            let mut hasher = Sha384::new();
-            hasher.update(&mr);
-            hasher.update(&content_bytes);
-            mr = hasher.finalize().to_vec();
-        }
-
-        hex::encode(mr)
+        hex::encode(rtmr)
     }
 
+    // Validate event structure (for future use)
     fn validate_event(&self, event: &EventLogEvent) -> bool {
-        // Skip validation for non-IMR3 events
-        if event.imr != 3 {
-            return true;
+        match event.event.as_str() {
+            "app-id" | "instance-id" | "compose-hash" => !event.event_payload.is_empty(),
+            _ => true, // Unknown events are allowed
         }
+    }
+}
 
-        // Calculate digest using sha384(type:event:payload)
-        let mut hasher = Sha384::new();
-        hasher.update(event.event_type.to_le_bytes());
-        hasher.update(b":");
-        hasher.update(event.event.as_bytes());
-        hasher.update(b":");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let payload = hex::decode(&event.event_payload).unwrap_or_default();
-        hasher.update(&payload);
+    #[test]
+    fn test_replay_rtmr() {
+        let config = TdxConfig::from_env();
+        let verifier = TdxVerifier::new(config);
 
-        let calculated_digest = hex::encode(hasher.finalize());
-        calculated_digest == event.digest
+        let history = vec!["event1".to_string(), "event2".to_string()];
+        let rtmr = verifier.replay_rtmr(&history);
+
+        assert_eq!(rtmr.len(), 96); // 48 bytes = 96 hex chars
+    }
+
+    #[test]
+    fn test_validate_event() {
+        let config = TdxConfig::from_env();
+        let verifier = TdxVerifier::new(config);
+
+        let event = EventLogEvent {
+            event: "app-id".to_string(),
+            event_payload: "test-app".to_string(),
+        };
+
+        assert!(verifier.validate_event(&event));
+
+        let invalid_event = EventLogEvent {
+            event: "app-id".to_string(),
+            event_payload: "".to_string(),
+        };
+
+        assert!(!verifier.validate_event(&invalid_event));
     }
 }

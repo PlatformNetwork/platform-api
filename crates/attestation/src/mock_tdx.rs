@@ -3,7 +3,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256, Sha384};
 
 /// Mock TDX quote generator for development mode
-/// 
+///
 /// Generates structurally valid TDX quotes that simulate real TDX behavior
 /// including proper report_data placement, measurements, and event logs.
 pub struct MockTdxQuote;
@@ -32,13 +32,13 @@ pub struct MeasurementData {
 
 impl MockTdxQuote {
     /// Generate a mock TDX quote with proper structure
-    /// 
+    ///
     /// # Arguments
     /// * `nonce` - Nonce bytes to bind in report_data (SHA256 hash will be embedded)
     /// * `compose_hash` - Docker compose hash for event log
     /// * `app_id` - Application identifier
     /// * `instance_id` - Instance identifier
-    /// 
+    ///
     /// # Returns
     /// A MockQuoteData containing the quote, event log, and RTMRs
     pub fn generate(
@@ -61,7 +61,7 @@ impl MockTdxQuote {
         // Embed report_data at known offsets (common TDX quote offsets)
         // Try multiple common offsets to match real TDX behavior
         let report_offsets: [usize; 3] = [368, 568, 576];
-        
+
         // Use the first offset that fits
         let report_offset = report_offsets[0];
         if quote.len() >= report_offset + 32 {
@@ -73,7 +73,7 @@ impl MockTdxQuote {
         let rt_mr0 = Self::generate_rtmr(&[]);
         let rt_mr1 = Self::generate_rtmr(&[b"kernel"]);
         let rt_mr2 = Self::generate_rtmr(&[b"initrd"]);
-        
+
         // RTMR3 contains event log measurements
         let event_log_events = Self::build_event_log_events(compose_hash, app_id, instance_id);
         let rt_mr3 = Self::generate_rtmr_from_events(&event_log_events);
@@ -102,7 +102,7 @@ impl MockTdxQuote {
     }
 
     /// Extract measurement data from a mock quote
-    /// 
+    ///
     /// This simulates the extraction process that would happen with a real TDX quote
     pub fn extract_measurements(quote: &[u8], nonce: &[u8]) -> Result<MeasurementData> {
         // Calculate expected report_data
@@ -124,8 +124,7 @@ impl MockTdxQuote {
             }
         }
 
-        let report_data = found_report_data
-            .context("Could not find report_data matching nonce")?;
+        let report_data = found_report_data.context("Could not find report_data matching nonce")?;
 
         // Generate mock MRs (in real TDX, these would be extracted from quote)
         let mr_td = Self::generate_mr_hash("td");
@@ -217,8 +216,7 @@ impl MockTdxQuote {
             })
             .collect();
 
-        serde_json::to_string(&event_log_array)
-            .unwrap_or_else(|_| "[]".to_string())
+        serde_json::to_string(&event_log_array).unwrap_or_else(|_| "[]".to_string())
     }
 
     /// Generate RTMR from content
@@ -305,7 +303,7 @@ mod tests {
     fn test_generate_mock_quote() {
         let nonce = b"test-nonce-12345";
         let result = MockTdxQuote::generate_default(nonce).unwrap();
-        
+
         assert_eq!(result.quote.len(), 1024);
         assert!(!result.event_log.is_empty());
         assert_eq!(result.rtmrs.len(), 4);
@@ -315,9 +313,9 @@ mod tests {
     fn test_extract_measurements() {
         let nonce = b"test-nonce-12345";
         let quote_data = MockTdxQuote::generate_default(nonce).unwrap();
-        
+
         let measurements = MockTdxQuote::extract_measurements(&quote_data.quote, nonce).unwrap();
-        
+
         assert_eq!(measurements.report_data.len(), 32);
         assert!(!measurements.mr_td.is_empty());
         assert_eq!(measurements.rt_mr0.len(), 96); // 48 bytes * 2 (hex)
@@ -327,17 +325,17 @@ mod tests {
     fn test_nonce_binding() {
         let nonce1 = b"nonce-1";
         let nonce2 = b"nonce-2";
-        
+
         let quote1 = MockTdxQuote::generate_default(nonce1).unwrap();
         let quote2 = MockTdxQuote::generate_default(nonce2).unwrap();
-        
+
         // Quotes should be different
         assert_ne!(quote1.quote, quote2.quote);
-        
+
         // But report_data should match respective nonces
         let m1 = MockTdxQuote::extract_measurements(&quote1.quote, nonce1).unwrap();
         let m2 = MockTdxQuote::extract_measurements(&quote2.quote, nonce2).unwrap();
-        
+
         assert_ne!(m1.report_data, m2.report_data);
     }
 
@@ -349,13 +347,13 @@ mod tests {
             Some("test-compose-hash"),
             Some("test-app-id"),
             Some("test-instance-id"),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let event_log: serde_json::Value = serde_json::from_str(&quote_data.event_log).unwrap();
         assert!(event_log.is_array());
-        
+
         let events = event_log.as_array().unwrap();
         assert!(events.len() >= 3); // app-id, instance-id, compose-hash, dev-mode
     }
 }
-

@@ -3,16 +3,14 @@ use crate::models::JobCache;
 use crate::orm_gateway::{ORMGatewayConfig, SecureORMGateway};
 use crate::redis_client::RedisClient;
 use crate::security::PlatformSecurity;
-use crate::services::BittensorService;
+use crate::services::{BittensorService, DstackVerifierClient};
 use chrono::{DateTime, Utc};
-use hex;
 use platform_api_attestation::AttestationService;
 use platform_api_builder::BuilderService;
 use platform_api_kbs::KeyBrokerService;
 use platform_api_models::{ChallengeSpec, ValidatorChallengeStatus};
 use platform_api_scheduler::SchedulerService;
 use platform_api_storage::{ArtifactStorage, MemoryStorageBackend, StorageBackend};
-use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +40,7 @@ pub struct AppState {
     pub redis_client: Option<Arc<RedisClient>>,         // Redis client for job progress logging
     pub chutes_api_token: Arc<tokio::sync::RwLock<Option<String>>>, // CHUTES API token for platform-api (decrypted)
     pub bittensor: Option<Arc<BittensorService>>, // Bittensor service for blockchain queries
+    pub dstack_verifier: Option<Arc<DstackVerifierClient>>, // DStack verifier for full platform verification
 }
 
 /// Validator connection information
@@ -50,7 +49,7 @@ pub struct ValidatorConnection {
     pub validator_hotkey: String,
     pub app_id: Option<String>,
     pub instance_id: Option<String>,
-    pub compose_hash: String,
+    pub compose_hash: Option<String>,
     pub connected_at: DateTime<Utc>,
     pub session_token: String,
     pub last_ping: DateTime<Utc>,
@@ -62,7 +61,6 @@ pub struct ValidatorConnection {
 pub struct AppConfig {
     pub server_port: u16,
     pub server_host: String,
-    pub jwt_secret_ui: String, // Dedicated JWT secret for UI routes (separate from attestation JWT)
     pub database_url: String,
     pub storage_config: StorageConfig,
     pub attestation_config: AttestationConfig,
@@ -146,7 +144,29 @@ impl AppState {
         )?);
         let metrics = Arc::new(MetricsService::new(&config.metrics_config)?);
         let artifact_storage = Arc::new(ArtifactStorage::new());
-        let security = Arc::new(PlatformSecurity::init_from_tdx().await?);
+
+        // Initialize security
+        tracing::info!("Initializing PlatformSecurity");
+        let security = match PlatformSecurity::new() {
+            Ok(sec) => {
+                let pub_key = sec.get_public_key();
+                tracing::info!(
+                    "✅ PlatformSecurity initialized successfully. Public key length: {} bytes",
+                    pub_key.len()
+                );
+                if pub_key.is_empty() {
+                    tracing::error!("❌ WARNING: Public key is empty after initialization!");
+                }
+                Arc::new(sec)
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to initialize PlatformSecurity: {}", e);
+                return Err(anyhow::anyhow!(
+                    "Failed to initialize PlatformSecurity: {}",
+                    e
+                ));
+            }
+        };
         let validator_connections = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let challenge_registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let validator_challenge_status = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
@@ -205,9 +225,7 @@ impl AppState {
 
         // Initialize Bittensor service
         let bittensor_endpoint = std::env::var("BT_ENDPOINT").ok();
-        let bittensor_netuid = std::env::var("BT_NETUID")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let bittensor_netuid = std::env::var("BT_NETUID").ok().and_then(|s| s.parse().ok());
         let bittensor = match BittensorService::new(bittensor_netuid, bittensor_endpoint).await {
             Ok(service) => {
                 info!("BittensorService initialized successfully");
@@ -218,6 +236,22 @@ impl AppState {
                 None
             }
         };
+
+        // Initialize DStack verifier client if DSTACK_VERIFIER_URL is set
+        let dstack_verifier = std::env::var("DSTACK_VERIFIER_URL")
+            .ok()
+            .and_then(|url| {
+                match DstackVerifierClient::new(url) {
+                    Ok(client) => {
+                        info!("DStack verifier client initialized for full platform verification");
+                        Some(Arc::new(client))
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize DStack verifier client: {}. Full platform verification will be disabled.", e);
+                        None
+                    }
+                }
+            });
 
         Ok(Self {
             storage,
@@ -240,6 +274,7 @@ impl AppState {
             redis_client,
             chutes_api_token,
             bittensor,
+            dstack_verifier,
         })
     }
 
@@ -310,7 +345,7 @@ impl AppState {
 
             // Re-read after potential sync
             let registry = self.challenge_registry.read().await;
-            let mut challenges: Vec<ChallengeSpec> = registry.values().cloned().collect();
+            let challenges: Vec<ChallengeSpec> = registry.values().cloned().collect();
             tracing::info!(
                 "Returning {} challenges after sync attempt",
                 challenges.len()
@@ -424,57 +459,18 @@ impl AppState {
     async fn load_chutes_api_token(
         token: Arc<tokio::sync::RwLock<Option<String>>>,
         pool: Arc<PgPool>,
-        encryption_key: &str,
+        _encryption_key: &str,
     ) -> anyhow::Result<()> {
-        use platform_api_storage::decrypt_artifact;
-        use platform_api_storage::encrypt_artifact;
-        use platform_api_storage::EncryptedArtifact;
-
-        // Try to load from database
-        let row = sqlx::query("SELECT encrypted_value, nonce FROM platform_config WHERE key = $1")
+        // Try to load from database (stored in plain text, no encryption)
+        let row = sqlx::query("SELECT value FROM platform_config WHERE key = $1")
             .bind("chutes_api_token")
             .fetch_optional(&*pool)
             .await?;
 
         if let Some(row) = row {
-            // Decrypt the token
-            let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
-            let nonce: Vec<u8> = row.try_get("nonce")?;
-
-            let encrypted = EncryptedArtifact {
-                ciphertext: encrypted_value,
-                nonce: nonce,
-                mac: vec![],
-            };
-
-            // Convert encryption_key string to bytes
-            // Try hex decode first, then fallback to raw bytes
-            let key_bytes: Vec<u8> = if encryption_key.len() == 64 {
-                // Likely hex encoded (32 bytes = 64 hex chars)
-                hex::decode(encryption_key)
-                    .map_err(|_| anyhow::anyhow!("Invalid hex encryption key"))?
-            } else {
-                // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
-                encryption_key.as_bytes().to_vec()
-            };
-
-            // Ensure key is exactly 32 bytes for AES-256-GCM
-            if key_bytes.len() != 32 {
-                return Err(anyhow::anyhow!(
-                    "Encryption key must be 32 bytes (got {} bytes)",
-                    key_bytes.len()
-                ));
-            }
-
-            let key_array: [u8; 32] = key_bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
-
-            let decrypted_bytes = decrypt_artifact(&encrypted, &key_array)?;
-            let decrypted_token = String::from_utf8(decrypted_bytes)?;
-
+            let token_value: String = row.try_get("value")?;
             let mut token_guard = token.write().await;
-            *token_guard = Some(decrypted_token);
+            *token_guard = Some(token_value);
             info!("CHUTES API token loaded from database");
         } else {
             // Try to load from environment variable as fallback
@@ -497,7 +493,7 @@ impl AppState {
     }
 
     /// Load challenge environment variables from database
-    /// Returns a HashMap of env var names to their decrypted values
+    /// Returns a HashMap of env var names to their values (stored in plain text)
     pub async fn load_challenge_env_vars(
         &self,
         compose_hash: &str,
@@ -507,58 +503,18 @@ impl AppState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Database pool not available"))?;
 
-        let encryption_key = &self.config.storage_config.encryption_key;
-
-        use platform_api_storage::decrypt_artifact;
-        use platform_api_storage::EncryptedArtifact;
-
-        // Load all env vars for this challenge
-        let rows = sqlx::query(
-            "SELECT key, encrypted_value, nonce FROM challenge_env_vars WHERE compose_hash = $1",
-        )
-        .bind(compose_hash)
-        .fetch_all(&**pool)
-        .await?;
+        // Load all env vars for this challenge (stored in plain text, no encryption)
+        let rows = sqlx::query("SELECT key, value FROM challenge_env_vars WHERE compose_hash = $1")
+            .bind(compose_hash)
+            .fetch_all(&**pool)
+            .await?;
 
         let mut env_vars = HashMap::new();
 
-        // Convert encryption_key string to bytes
-        let key_bytes: Vec<u8> = if encryption_key.len() == 64 {
-            // Likely hex encoded (32 bytes = 64 hex chars)
-            hex::decode(encryption_key)
-                .map_err(|_| anyhow::anyhow!("Invalid hex encryption key"))?
-        } else {
-            // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
-            encryption_key.as_bytes().to_vec()
-        };
-
-        // Ensure key is exactly 32 bytes for AES-256-GCM
-        if key_bytes.len() != 32 {
-            return Err(anyhow::anyhow!(
-                "Encryption key must be 32 bytes (got {} bytes)",
-                key_bytes.len()
-            ));
-        }
-
-        let key_array: [u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
-
         for row in rows {
             let env_key: String = row.try_get("key")?;
-            let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
-            let nonce: Vec<u8> = row.try_get("nonce")?;
-
-            let encrypted = EncryptedArtifact {
-                ciphertext: encrypted_value,
-                nonce: nonce,
-                mac: vec![],
-            };
-
-            let decrypted_bytes = decrypt_artifact(&encrypted, &key_array)?;
-            let decrypted_value = String::from_utf8(decrypted_bytes)?;
-
-            env_vars.insert(env_key, decrypted_value);
+            let env_value: String = row.try_get("value")?;
+            env_vars.insert(env_key, env_value);
         }
 
         if !env_vars.is_empty() {
@@ -573,7 +529,7 @@ impl AppState {
         Ok(env_vars)
     }
 
-    /// Store challenge environment variable in database (encrypted)
+    /// Store challenge environment variable in database (plain text, no encryption)
     pub async fn store_challenge_env_var(
         &self,
         compose_hash: &str,
@@ -585,49 +541,18 @@ impl AppState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Database pool not available"))?;
 
-        let encryption_key = &self.config.storage_config.encryption_key;
-
-        use platform_api_storage::encrypt_artifact;
-        use platform_api_storage::EncryptedArtifact;
-
-        // Convert encryption_key string to bytes
-        let key_bytes: Vec<u8> = if encryption_key.len() == 64 {
-            // Likely hex encoded (32 bytes = 64 hex chars)
-            hex::decode(encryption_key)
-                .map_err(|_| anyhow::anyhow!("Invalid hex encryption key"))?
-        } else {
-            // Raw bytes (must be exactly 32 bytes for AES-256-GCM)
-            encryption_key.as_bytes().to_vec()
-        };
-
-        // Ensure key is exactly 32 bytes for AES-256-GCM
-        if key_bytes.len() != 32 {
-            return Err(anyhow::anyhow!(
-                "Encryption key must be 32 bytes (got {} bytes)",
-                key_bytes.len()
-            ));
-        }
-
-        let key_array: [u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Failed to convert key to array"))?;
-
-        // Encrypt the value
-        let encrypted = encrypt_artifact(value.as_bytes(), &key_array)?;
-
-        // Store in database (upsert)
+        // Store in database (upsert) - plain text, no encryption
         sqlx::query(
             r#"
-            INSERT INTO challenge_env_vars (compose_hash, key, encrypted_value, nonce)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO challenge_env_vars (compose_hash, key, value)
+            VALUES ($1, $2, $3)
             ON CONFLICT (compose_hash, key)
-            DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, nonce = EXCLUDED.nonce, updated_at = NOW()
-            "#
+            DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            "#,
         )
         .bind(compose_hash)
         .bind(key)
-        .bind(&encrypted.ciphertext)
-        .bind(&encrypted.nonce)
+        .bind(value)
         .execute(&**pool)
         .await?;
 

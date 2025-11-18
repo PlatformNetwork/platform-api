@@ -193,10 +193,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
     debug!("Acquiring write lock on registry...");
     let mut registry = state.challenge_registry.write().await;
     let registry_len_before = registry.len();
-    info!(
-        "Write lock acquired, current size: {}",
-        registry_len_before
-    );
+    info!("Write lock acquired, current size: {}", registry_len_before);
 
     // Track which challenges are new or changed
     let mut new_or_changed = Vec::new();
@@ -257,10 +254,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         warn!("No challenges found in database AND registry is empty!");
         warn!("   Make sure to run: docker exec -i platform-postgres-dev psql -U platform -d platform_dev < docker-init-db/02-insert-term-challenge.sql");
     } else {
-        info!(
-            "Registry unchanged, contains {} challenges",
-            registry.len()
-        );
+        info!("Registry unchanged, contains {} challenges", registry.len());
     }
 
     drop(registry);

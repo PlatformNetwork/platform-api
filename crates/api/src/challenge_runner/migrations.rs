@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 use tempfile::NamedTempFile;
 use tracing::{error, info, warn};
 
@@ -261,7 +261,8 @@ impl MigrationRunner {
         );
 
         // Execute migration via psql (wrapped in transaction)
-        self.execute_migration_via_psql(schema_name, migration).await?;
+        self.execute_migration_via_psql(schema_name, migration)
+            .await?;
 
         // Record migration in schema_migrations table
         let record_query = format!(
@@ -279,7 +280,7 @@ impl MigrationRunner {
             name = &migration.name,
             "Recording migration in schema_migrations table"
         );
-        
+
         match sqlx::query(&record_query)
             .bind(&migration.version)
             .bind(&migration.name)
@@ -370,14 +371,12 @@ impl MigrationRunner {
         );
 
         // Get DATABASE_URL
-        let database_url = std::env::var("DATABASE_URL")
-            .context("DATABASE_URL environment variable not set")?;
+        let database_url =
+            std::env::var("DATABASE_URL").context("DATABASE_URL environment variable not set")?;
 
         // Check if psql is available
-        let psql_check = Command::new("which")
-            .arg("psql")
-            .output();
-        
+        let psql_check = Command::new("which").arg("psql").output();
+
         match psql_check {
             Ok(output) if output.status.success() => {
                 let psql_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -407,25 +406,23 @@ impl MigrationRunner {
              SET search_path TO {}, public;\n\n\
              {}\n\n\
              COMMIT;",
-            migration.name,
-            migration.version,
-            schema_name,
-            schema_name,
-            migration.sql
+            migration.name, migration.version, schema_name, schema_name, migration.sql
         );
-        
-        let mut temp_file = NamedTempFile::new()
-            .context("Failed to create temporary SQL file")?;
-        
+
+        let mut temp_file = NamedTempFile::new().context("Failed to create temporary SQL file")?;
+
         temp_file
             .write_all(full_sql.as_bytes())
             .context("Failed to write migration SQL to temporary file")?;
-        
+
         // Flush to ensure data is written
-        temp_file.flush()
+        temp_file
+            .flush()
             .context("Failed to flush temporary SQL file")?;
-        
-        let temp_path = temp_file.path().to_str()
+
+        let temp_path = temp_file
+            .path()
+            .to_str()
             .ok_or_else(|| anyhow::anyhow!("Failed to get temporary file path"))?;
 
         info!(
@@ -459,7 +456,7 @@ impl MigrationRunner {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             let exit_code = output.status.code().unwrap_or(-1);
-            
+
             // Log full error details
             error!(
                 schema = schema_name,
@@ -470,7 +467,7 @@ impl MigrationRunner {
                 "psql execution failed with exit code {}",
                 exit_code
             );
-            
+
             // Log stderr and stdout if they contain useful information
             if !stderr.is_empty() {
                 error!(
@@ -488,7 +485,7 @@ impl MigrationRunner {
                     "psql stdout output"
                 );
             }
-            
+
             // Try to extract line number from error message
             let line_number = Self::extract_line_number_from_error(&stderr);
             let error_context = if let Some(line) = line_number {
@@ -496,23 +493,21 @@ impl MigrationRunner {
             } else {
                 format!("psql exited with code {}", exit_code)
             };
-            
+
             // Provide SQL preview for context
-            let sql_preview = migration.sql
+            let sql_preview = migration
+                .sql
                 .lines()
                 .take(10)
                 .collect::<Vec<_>>()
                 .join("\n");
-            
+
             // Build comprehensive error message
             let mut error_msg = format!(
                 "Migration {} ({}) failed via psql:\n{}\n\nExit code: {}\n",
-                migration.version,
-                migration.name,
-                error_context,
-                exit_code
+                migration.version, migration.name, error_context, exit_code
             );
-            
+
             if !stderr.is_empty() {
                 error_msg.push_str(&format!("STDERR:\n{}\n\n", stderr));
             }
@@ -520,7 +515,7 @@ impl MigrationRunner {
                 error_msg.push_str(&format!("STDOUT:\n{}\n\n", stdout));
             }
             error_msg.push_str(&format!("SQL preview (first 10 lines):\n{}", sql_preview));
-            
+
             return Err(anyhow::anyhow!(error_msg));
         }
 
@@ -532,7 +527,7 @@ impl MigrationRunner {
 
         Ok(())
     }
-    
+
     /// Extract line number from psql error message
     /// PostgreSQL errors often include "LINE X:" in the error message
     fn extract_line_number_from_error(error_msg: &str) -> Option<usize> {
@@ -568,7 +563,6 @@ impl MigrationRunner {
         }
         None
     }
-
 }
 
 /// Migration status response

@@ -28,10 +28,9 @@ sha2 = { workspace = true }
 aes-gcm = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+hmac = "0.12"
 
-# JWT
-jsonwebtoken = "9.3"
+# DCAP Quote Verification
+dcap-qvl = { git = "https://github.com/Phala-Network/dcap-qvl.git", features = ["default", "report"] }
 
-# TDX verification
-dcap-qvl = "0.3.3"
 

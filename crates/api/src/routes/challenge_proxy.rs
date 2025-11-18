@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use serde_json::{Map, Value};
@@ -40,7 +40,7 @@ fn sort_json_keys(value: &Value) -> Value {
             let mut sorted_map = Map::new();
             let mut keys: Vec<String> = map.keys().cloned().collect();
             keys.sort();
-            
+
             for k in keys {
                 if let Some(v) = map.get(&k) {
                     sorted_map.insert(k, sort_json_keys(v));
@@ -202,7 +202,10 @@ async fn verify_miner_signature(
 
 /// Check if an endpoint is a public read-only endpoint that doesn't require signature
 fn is_public_readonly_endpoint(route_name: &str) -> bool {
-    matches!(route_name, "get_agent_status" | "list_agents" | "list_agent_jobs")
+    matches!(
+        route_name,
+        "get_agent_status" | "list_agents" | "list_agent_jobs"
+    )
 }
 
 /// Proxy GET request to challenge CVM

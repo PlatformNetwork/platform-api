@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Redis client for job progress logging
 #[derive(Clone)]
@@ -63,7 +62,7 @@ impl RedisClient {
 
         // Set with TTL of 24 hours (86400 seconds)
         let ttl: u64 = 86400;
-        conn.set_ex(&key, json, ttl)
+        conn.set_ex::<_, _, ()>(&key, json, ttl)
             .await
             .context("Failed to set job progress in Redis")?;
 

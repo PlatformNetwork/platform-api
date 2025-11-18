@@ -5,9 +5,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod tls;
@@ -62,9 +60,6 @@ async fn main() -> Result<()> {
 
     // Create application state
     let state = AppState::new(config.clone()).await?;
-
-    // Initialize security with TDX attestation
-    let state = state.init_security_from_tdx().await?;
 
     // Initialize ChallengeRunner if database pool is available
     let state = if let Some(pool) = &state.database_pool {
@@ -124,15 +119,8 @@ fn load_config(_path: &str) -> Result<AppConfig> {
     // For now, return a default configuration
     // In a real implementation, this would load from the specified file
 
-    // Check if we're in dev mode
+    // Check if we're in dev mode (for logging purposes only)
     let dev_mode = env::var("DEV_MODE").unwrap_or_else(|_| "false".to_string()) == "true";
-    let env_mode = env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| {
-        if dev_mode {
-            "dev".to_string()
-        } else {
-            "prod".to_string()
-        }
-    });
 
     // Generate random secrets in dev mode (not hardcoded)
     // In production, fail fast if secrets are missing
@@ -143,31 +131,8 @@ fn load_config(_path: &str) -> Result<AppConfig> {
         hex::encode(key)
     };
 
-    let storage_key = env::var("STORAGE_ENCRYPTION_KEY")
-        .unwrap_or_else(|_| {
-            if dev_mode || env_mode == "dev" {
-                // Generate random key in dev mode
-                let key = generate_random_key();
-                tracing::info!("DEV MODE: Generated random STORAGE_ENCRYPTION_KEY");
-                key
-            } else {
-                // Fail fast in production
-                panic!("Security error: STORAGE_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
-            }
-        });
-
-    let kbs_key = env::var("KBS_ENCRYPTION_KEY")
-        .unwrap_or_else(|_| {
-            if dev_mode || env_mode == "dev" {
-                // Generate random key in dev mode
-                let key = generate_random_key();
-                tracing::info!("DEV MODE: Generated random KBS_ENCRYPTION_KEY");
-                key
-            } else {
-                // Fail fast in production
-                panic!("Security error: KBS_ENCRYPTION_KEY environment variable must be set for production. Cannot use default or generated keys.");
-            }
-        });
+    // Encryption disabled - no longer using STORAGE_ENCRYPTION_KEY or KBS_ENCRYPTION_KEY
+    tracing::info!("Storage and KBS encryption disabled");
 
     Ok(AppConfig {
         server_port: env::var("SERVER_PORT")
@@ -175,7 +140,6 @@ fn load_config(_path: &str) -> Result<AppConfig> {
             .parse()
             .expect("Invalid SERVER_PORT"),
         server_host: env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-        jwt_secret_ui: env::var("JWT_SECRET_UI").unwrap_or_else(|_| "disabled-no-jwt".to_string()),
         database_url: env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgresql://localhost/platform".to_string()),
         storage_config: platform_api_storage::StorageConfig {
@@ -183,7 +147,7 @@ fn load_config(_path: &str) -> Result<AppConfig> {
             s3_bucket: Some("platform-storage".to_string()),
             s3_region: Some("us-east-1".to_string()),
             minio_endpoint: None,
-            encryption_key: storage_key,
+            encryption_key: "disabled".to_string(),
         },
         attestation_config: platform_api_attestation::TdxConfig::from_env(),
         kbs_config: platform_api_kbs::KbsConfig {
@@ -191,7 +155,6 @@ fn load_config(_path: &str) -> Result<AppConfig> {
             key_size: 256,
             session_timeout: 3600,
             max_sessions: 1000,
-            encryption_key: kbs_key,
         },
         scheduler_config: platform_api_scheduler::SchedulerConfig {
             max_concurrent_jobs: 100,

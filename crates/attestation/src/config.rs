@@ -7,14 +7,10 @@ pub struct TdxConfig {
     pub tee_enforced: bool,
     /// Whether dev mode is enabled (mock attestation)
     pub dev_mode: bool,
-    /// JWT secret for token signing
-    pub jwt_secret: String,
     /// Session timeout in seconds
     pub session_timeout: u64,
-    /// Storage encryption key
-    pub storage_encryption_key: Option<String>,
-    /// KBS encryption key
-    pub kbs_encryption_key: Option<String>,
+    /// PCCS URL for collateral retrieval
+    pub pccs_url: Option<String>,
 }
 
 impl TdxConfig {
@@ -30,43 +26,18 @@ impl TdxConfig {
             .to_lowercase()
             == "true";
 
-        let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| {
-            if dev_mode {
-                "dev-secret-not-for-production".to_string()
-            } else {
-                panic!("JWT_SECRET must be set in production mode")
-            }
-        });
-
         let session_timeout = std::env::var("SESSION_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(86400); // 24 hours default
 
-        let storage_encryption_key = std::env::var("STORAGE_ENCRYPTION_KEY").ok();
-        let kbs_encryption_key = std::env::var("KBS_ENCRYPTION_KEY").ok();
-
-        // Validate configuration
-        if tee_enforced && !dev_mode {
-            // Production mode checks
-            if jwt_secret == "disabled-no-jwt" || jwt_secret == "dev-secret-not-for-production" {
-                panic!("Invalid JWT_SECRET for production mode");
-            }
-            if storage_encryption_key.is_none() {
-                tracing::warn!("STORAGE_ENCRYPTION_KEY not set in production mode");
-            }
-            if kbs_encryption_key.is_none() {
-                tracing::warn!("KBS_ENCRYPTION_KEY not set in production mode");
-            }
-        }
+        let pccs_url = std::env::var("PCCS_URL").ok();
 
         Self {
             tee_enforced,
             dev_mode,
-            jwt_secret,
             session_timeout,
-            storage_encryption_key,
-            kbs_encryption_key,
+            pccs_url,
         }
     }
 
@@ -86,7 +57,7 @@ impl TdxConfig {
             .unwrap_or_else(|_| "false".to_string())
             .to_lowercase()
             == "true";
-        
+
         match (self.tee_enforced, self.dev_mode, tdx_simulation) {
             (true, false, false) => "Production (TEE enforced)",
             (false, true, true) => "Development (Enhanced TDX simulation)",
@@ -132,7 +103,6 @@ mod tests {
     fn test_production_mode() {
         std::env::set_var("TEE_ENFORCED", "true");
         std::env::set_var("DEV_MODE", "false");
-        std::env::set_var("JWT_SECRET", "production-secret");
 
         let config = TdxConfig::from_env();
         assert!(config.is_production());
@@ -142,7 +112,6 @@ mod tests {
         // Cleanup
         std::env::remove_var("TEE_ENFORCED");
         std::env::remove_var("DEV_MODE");
-        std::env::remove_var("JWT_SECRET");
     }
 
     #[test]

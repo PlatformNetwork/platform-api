@@ -135,7 +135,7 @@ pub async fn list_mechanisms(
         .into_iter()
         .map(|(mechanism_id, challenges)| {
             let total_emission_share: f64 = challenges.iter().map(|c| c.emission_share).sum();
-            
+
             // Calculate mechanism emission percentage (sum of all challenge emission shares)
             // This is a simplified calculation - in reality, mechanism emission might be configured separately
             let emission_percentage = (total_emission_share * 100.0).min(100.0);
@@ -159,8 +159,7 @@ pub async fn list_mechanisms(
 
     // Sort by mechanism_id
     mechanisms.sort_by_key(|m| {
-        m.id
-            .strip_prefix("mechanism-")
+        m.id.strip_prefix("mechanism-")
             .and_then(|s| s.parse::<i16>().ok())
             .unwrap_or(0)
     });
@@ -170,8 +169,3 @@ pub async fn list_mechanisms(
         mechanisms,
     }))
 }
-
-
-
-
-

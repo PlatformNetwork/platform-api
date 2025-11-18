@@ -1,13 +1,9 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::models::{JobCache, JobStatus};
+use crate::models::JobCache;
 use crate::redis_client::{create_job_log, create_job_progress};
 use crate::state::AppState;
 use platform_api_models::ValidatorChallengeState;
@@ -363,12 +359,13 @@ impl JobDistributor {
             // Try to find challenge instance and call receive_job_result endpoint
             if let Some(challenge_runner) = &self.state.challenge_runner {
                 let running_challenges = challenge_runner.list_running_challenges().await;
-                
+
                 // Find challenge by challenge_id from job_cache
-                let challenge_instance = running_challenges
-                    .iter()
-                    .find(|inst| inst.challenge_id == job_cache.challenge_id || inst.name == job_cache.challenge_id);
-                
+                let challenge_instance = running_challenges.iter().find(|inst| {
+                    inst.challenge_id == job_cache.challenge_id
+                        || inst.name == job_cache.challenge_id
+                });
+
                 if let Some(instance) = challenge_instance {
                     if let Some(cvm_api_url) = &instance.cvm_api_url {
                         // Build target URL for receive_job_result endpoint
@@ -376,27 +373,28 @@ impl JobDistributor {
                             "{}/sdk/public/receive_job_result",
                             cvm_api_url.trim_end_matches('/')
                         );
-                        
+
                         // Prepare payload for receive_job_result
                         // Use validator_hotkey from result if available, otherwise use first assigned validator
-                        let validator_hotkey = result.validator_hotkey
+                        let validator_hotkey = result
+                            .validator_hotkey
                             .or_else(|| job_cache.assigned_validators.first().cloned())
                             .unwrap_or_else(|| "unknown".to_string());
-                        
+
                         let payload = serde_json::json!({
                             "job_id": result.job_id,
                             "validator_hotkey": validator_hotkey,
                             "result": result.result,
                             "error": result.error
                         });
-                        
+
                         // Create HTTP client
                         let client = reqwest::Client::builder()
                             .danger_accept_invalid_certs(true) // Accept self-signed certs from CVMs
                             .timeout(std::time::Duration::from_secs(30))
                             .build()
                             .context("Failed to create HTTP client")?;
-                        
+
                         // Call receive_job_result endpoint
                         match client
                             .post(&target_url)

@@ -5,6 +5,7 @@ use axum::{
 };
 use uuid::Uuid;
 
+use crate::routes::jobs::{FailJobRequest, GetNextJobParams, ListJobsParams};
 use crate::state::AppState;
 use platform_api_models::{
     ClaimJobRequest, ClaimJobResponse, JobListResponse, JobMetadata, JobStats, PlatformResult,
@@ -98,27 +99,4 @@ pub async fn get_next_job_handler(
 pub async fn get_job_stats_handler(state: State<AppState>) -> PlatformResult<Json<JobStats>> {
     let stats = state.scheduler.get_job_stats().await?;
     Ok(Json(stats))
-}
-
-/// Query parameters for listing jobs
-#[derive(Debug, serde::Deserialize)]
-pub struct ListJobsParams {
-    pub page: Option<u32>,
-    pub per_page: Option<u32>,
-    pub status: Option<String>,
-    pub challenge_id: Option<Uuid>,
-}
-
-/// Query parameters for getting next job
-#[derive(Debug, serde::Deserialize)]
-pub struct GetNextJobParams {
-    pub validator_hotkey: String,
-    pub runtime: Option<String>,
-}
-
-/// Request to fail a job
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct FailJobRequest {
-    pub reason: String,
-    pub error_details: Option<String>,
 }

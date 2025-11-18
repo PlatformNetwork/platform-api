@@ -61,7 +61,6 @@ clap = { version = "4.0", features = ["derive"] }
 tokio-rustls = "0.24"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = "1.0"
-dcap-qvl = "0.3"
 x509-parser = "0.16"
 hyper = { version = "1.7.0", features = ["server"] }
 hyper-util = { version = "0.1.17", features = ["http1", "tokio"] }

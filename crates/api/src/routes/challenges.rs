@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -11,12 +11,11 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::state::AppState;
-use tracing::debug;
 use platform_api_models::{
     ChallengeDetailResponse, ChallengeListResponse, ChallengeMetadata, ChallengeStatus,
-    ChallengeVisibility, CreateChallengeRequest, Hotkey, Id, PlatformResult,
-    UpdateChallengeRequest,
+    ChallengeVisibility, CreateChallengeRequest, Hotkey, Id, UpdateChallengeRequest,
 };
+use tracing::debug;
 
 /// Create challenges router
 pub fn create_router() -> Router<AppState> {
@@ -59,9 +58,7 @@ pub async fn list_challenges(
 
     debug!(
         "Query parameters: page={}, per_page={}, offset={}",
-        page,
-        per_page,
-        offset
+        page, per_page, offset
     );
 
     // First, get total count
@@ -112,7 +109,10 @@ pub async fn list_challenges(
         LIMIT $1 OFFSET $2
         "#;
 
-    debug!("Executing SELECT query with LIMIT={}, OFFSET={}", per_page, offset);
+    debug!(
+        "Executing SELECT query with LIMIT={}, OFFSET={}",
+        per_page, offset
+    );
     tracing::debug!("   SQL: {}", query_sql);
 
     let rows = sqlx::query_as::<_, ChallengeRow>(query_sql)
@@ -132,7 +132,10 @@ pub async fn list_challenges(
     debug!("Query returned {} rows from database", rows.len());
 
     if rows.is_empty() && total > 0 {
-        tracing::warn!("No rows returned but total count is {} - possible pagination issue", total);
+        tracing::warn!(
+            "No rows returned but total count is {} - possible pagination issue",
+            total
+        );
     }
 
     // Log each challenge found
@@ -192,7 +195,13 @@ pub async fn list_challenges(
         per_page,
     };
 
-    debug!("Returning {} challenges (page {}, per_page {}, total {})", response.challenges.len(), page, per_page, total);
+    debug!(
+        "Returning {} challenges (page {}, per_page {}, total {})",
+        response.challenges.len(),
+        page,
+        per_page,
+        total
+    );
 
     if response.challenges.is_empty() && total == 0 {
         tracing::warn!("No challenges found in database! Table 'challenges' is empty.");
@@ -400,15 +409,15 @@ pub async fn get_challenge_specs(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     tracing::info!("get_challenge_specs: retrieving full challenge specifications");
-    
+
     // Use the same list_challenges method as WebSocket
     let challenges = state.list_challenges().await;
-    
+
     tracing::info!(
         "get_challenge_specs: returning {} challenge specs",
         challenges.len()
     );
-    
+
     Ok(Json(serde_json::json!({
         "type": "challenges:list",
         "challenges": challenges
@@ -520,10 +529,7 @@ pub async fn debug_challenges(
         }
     });
 
-    tracing::info!(
-        "Diagnostic complete: {} challenges found",
-        total_count
-    );
+    tracing::info!("Diagnostic complete: {} challenges found", total_count);
 
     Ok(Json(response))
 }

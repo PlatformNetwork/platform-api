@@ -76,7 +76,11 @@ pub struct ChallengeRunner {
     >, // Validator challenge status for get_validator_count
     redis_client: Option<Arc<crate::redis_client::RedisClient>>, // Redis client for job progress logging
     validator_connections: Option<
-        Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::state::ValidatorConnection>>>,
+        Arc<
+            tokio::sync::RwLock<
+                std::collections::HashMap<String, crate::state::ValidatorConnection>,
+            >,
+        >,
     >, // Validator connections for getting connected validators
 }
 
@@ -100,7 +104,11 @@ impl ChallengeRunner {
         >,
         redis_client: Option<Arc<crate::redis_client::RedisClient>>,
         validator_connections: Option<
-            Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::state::ValidatorConnection>>>,
+            Arc<
+                tokio::sync::RwLock<
+                    std::collections::HashMap<String, crate::state::ValidatorConnection>,
+                >,
+            >,
         >,
     ) -> Self {
         let migration_runner = MigrationRunner::new(db_pool.clone());
@@ -268,8 +276,10 @@ impl ChallengeRunner {
             let (migrations_applied_tx, migrations_applied_rx) = tokio::sync::oneshot::channel();
             let db_version_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(db_version_tx)));
             let migrations_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_tx)));
-            let migrations_applied_receiver_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_rx)));
-            let migrations_applied_sender_arc = Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_tx)));
+            let migrations_applied_receiver_arc =
+                Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_rx)));
+            let migrations_applied_sender_arc =
+                Arc::new(tokio::sync::Mutex::new(Some(migrations_applied_tx)));
 
             let mut client = ChallengeWsClient::new(ws_url.clone(), platform_api_id);
 
@@ -306,12 +316,12 @@ impl ChallengeRunner {
                         self.redis_client.clone(),
                     )
                     .with_compose_hash(compose_hash.to_string());
-                
+
                 // Set validator_connections if available
                 if let Some(validator_conns) = &self.validator_connections {
                     client_with_challenge.validator_connections = Some(validator_conns.clone());
                 }
-                
+
                 client = client_with_challenge;
             }
 
@@ -503,7 +513,9 @@ impl ChallengeRunner {
                 let mut sender_opt = migrations_applied_sender_arc.lock().await;
                 if let Some(sender) = sender_opt.take() {
                     if sender.send(()).is_err() {
-                        warn!("Failed to send migrations_applied signal (receiver may have dropped)");
+                        warn!(
+                            "Failed to send migrations_applied signal (receiver may have dropped)"
+                        );
                     } else {
                         info!("✅ Sent migrations_applied signal (no migrations to apply) - orm_ready can now be sent");
                     }
@@ -608,7 +620,6 @@ impl ChallengeRunner {
             .cloned()
             .collect()
     }
-
 
     /// Get challenge status by compose_hash
     pub async fn get_challenge_status_by_compose_hash(

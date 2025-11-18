@@ -1,5 +1,5 @@
 use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;

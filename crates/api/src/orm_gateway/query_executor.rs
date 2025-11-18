@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{Column, PgPool, Row, TypeInfo};
 use std::str::FromStr;
 use std::time::Instant;
 use tracing::info;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use super::{ColumnValue, ORMQuery, QueryFilter, QueryResult};
+use super::{ORMQuery, QueryFilter, QueryResult};
 
 /// Query executor for safe SQL execution
 pub struct QueryExecutor {
@@ -414,8 +414,9 @@ impl QueryExecutor {
                     // This handles cases where Python's json.dumps() sends JSON as a string
                     // but PostgreSQL expects JSONB
                     let trimmed = s.trim();
-                    if (trimmed.starts_with('{') && trimmed.ends_with('}')) 
-                        || (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+                    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+                    {
                         // Try to parse as JSON
                         if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&s) {
                             // Successfully parsed as JSON, bind as JSONB
@@ -425,15 +426,26 @@ impl QueryExecutor {
                             // Try to parse as ISO timestamp
                             if s.len() >= 19 && (s.contains('T') || s.contains(' ')) {
                                 // First try NaiveDateTime (for timestamp without time zone columns)
-                                if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
+                                if let Ok(ndt) =
+                                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f")
+                                {
                                     query.bind(ndt)
-                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
+                                } else if let Ok(ndt) =
+                                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
+                                {
                                     query.bind(ndt)
-                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                                } else if let Ok(ndt) =
+                                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                                {
                                     query.bind(ndt)
-                                } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                                } else if let Ok(ndt) =
+                                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                                {
                                     query.bind(ndt)
-                                } else if s.ends_with('Z') || s.contains('+') || (s.matches('-').count() >= 4 && s.contains('T')) {
+                                } else if s.ends_with('Z')
+                                    || s.contains('+')
+                                    || (s.matches('-').count() >= 4 && s.contains('T'))
+                                {
                                     // Has timezone indicator, try DateTime<Utc>
                                     if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
                                         query.bind(dt.with_timezone(&Utc))
@@ -453,15 +465,26 @@ impl QueryExecutor {
                         // Doesn't look like JSON, try to parse as ISO timestamp
                         if s.len() >= 19 && (s.contains('T') || s.contains(' ')) {
                             // First try NaiveDateTime (for timestamp without time zone columns)
-                            if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
+                            if let Ok(ndt) =
+                                NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f")
+                            {
                                 query.bind(ndt)
-                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
+                            } else if let Ok(ndt) =
+                                NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
+                            {
                                 query.bind(ndt)
-                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                            } else if let Ok(ndt) =
+                                NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                            {
                                 query.bind(ndt)
-                            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                            } else if let Ok(ndt) =
+                                NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                            {
                                 query.bind(ndt)
-                            } else if s.ends_with('Z') || s.contains('+') || (s.matches('-').count() >= 4 && s.contains('T')) {
+                            } else if s.ends_with('Z')
+                                || s.contains('+')
+                                || (s.matches('-').count() >= 4 && s.contains('T'))
+                            {
                                 // Has timezone indicator, try DateTime<Utc>
                                 if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
                                     query.bind(dt.with_timezone(&Utc))
@@ -542,7 +565,7 @@ impl QueryExecutor {
             for (i, column) in row.columns().iter().enumerate() {
                 let column_name = column.name();
                 let type_name = column.type_info().name();
-                
+
                 let value: serde_json::Value = match type_name {
                     // Integer types
                     "INT2" => {

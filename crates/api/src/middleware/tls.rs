@@ -1,8 +1,5 @@
-use anyhow::{Context, Result};
-use axum::{extract::Request, http::StatusCode, response::Response};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tower::Service;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerAttestation {

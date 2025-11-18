@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Job status for tracking job execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

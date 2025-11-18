@@ -7,7 +7,6 @@ use axum::{
 };
 use serde_json::Value;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use crate::orm_gateway::ORMQuery;
 use crate::state::AppState;
@@ -25,7 +24,9 @@ pub fn create_router() -> Router<AppState> {
 /// Execute ORM query (read-only for validator)
 /// Validator hotkey must be in header X-Validator-Hotkey
 /// DEPRECATED: Use WebSocket for ORM queries instead of HTTP
-#[deprecated(note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility")]
+#[deprecated(
+    note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility"
+)]
 async fn execute_orm_query(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -33,7 +34,7 @@ async fn execute_orm_query(
 ) -> Result<Json<Value>, StatusCode> {
     // Get validator hotkey from header
     let validator_hotkey = extract_validator_hotkey(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    
+
     warn!(
         validator_hotkey = &validator_hotkey,
         "DEPRECATED: ORM query via HTTP - please use WebSocket connection instead"
@@ -52,7 +53,7 @@ async fn execute_orm_query(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     // Auto-set schema if challenge_id can be extracted from query or validator
-    let mut query_with_schema = query;
+    let query_with_schema = query;
     // Schema should be provided in the query, or use the challenge-specific endpoint
     // For now, require schema to be provided in query
 
@@ -76,7 +77,9 @@ async fn execute_orm_query(
 
 /// Execute ORM query for a specific challenge (read-only for validator)
 /// DEPRECATED: Use WebSocket for ORM queries instead of HTTP
-#[deprecated(note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility")]
+#[deprecated(
+    note = "Use WebSocket connection for ORM queries - HTTP route kept for backward compatibility"
+)]
 async fn execute_orm_query_with_challenge(
     State(state): State<AppState>,
     Path(challenge_id): Path<String>,
@@ -85,7 +88,7 @@ async fn execute_orm_query_with_challenge(
 ) -> Result<Json<Value>, StatusCode> {
     // Get validator hotkey from header
     let validator_hotkey = extract_validator_hotkey(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    
+
     warn!(
         validator_hotkey = &validator_hotkey,
         challenge_id = &challenge_id,
@@ -111,15 +114,15 @@ async fn execute_orm_query_with_challenge(
                     "Resolved schema from challenge_id (non-UUID) and db_version"
                 );
                 // Use read-only ORM gateway
-                let gateway = state.orm_gateway.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+                let gateway = state
+                    .orm_gateway
+                    .as_ref()
+                    .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
                 let gateway = gateway.read().await;
-                let result = gateway
-                    .execute_read_query(query)
-                    .await
-                    .map_err(|e| {
-                        error!("Failed to execute ORM query: {}", e);
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
+                let result = gateway.execute_read_query(query).await.map_err(|e| {
+                    error!("Failed to execute ORM query: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
                 return Ok(Json(serde_json::to_value(result).map_err(|e| {
                     error!("Failed to serialize ORM result: {}", e);
                     StatusCode::INTERNAL_SERVER_ERROR
@@ -127,16 +130,15 @@ async fn execute_orm_query_with_challenge(
             };
 
             // Query database for challenge name
-            let name_result: Option<String> = sqlx::query_scalar(
-                "SELECT name FROM challenges WHERE id = $1 LIMIT 1"
-            )
-            .bind(challenge_uuid)
-            .fetch_optional(pool.as_ref())
-            .await
-            .map_err(|e| {
-                error!("Failed to query challenge name from database: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            let name_result: Option<String> =
+                sqlx::query_scalar("SELECT name FROM challenges WHERE id = $1 LIMIT 1")
+                    .bind(challenge_uuid)
+                    .fetch_optional(pool.as_ref())
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to query challenge name from database: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
 
             match name_result {
                 Some(name) => name,
@@ -149,10 +151,7 @@ async fn execute_orm_query_with_challenge(
                 }
             }
         } else {
-            error!(
-                challenge_id = &challenge_id,
-                "Database pool not available"
-            );
+            error!(challenge_id = &challenge_id, "Database pool not available");
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         };
 

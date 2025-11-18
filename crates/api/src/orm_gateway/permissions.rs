@@ -10,7 +10,7 @@ use super::ORMQuery;
 pub struct TablePermission {
     pub table_name: String,
     pub readable_columns: HashSet<String>,
-    pub writable_columns: HashSet<String>,  // Columns that can be written by validators
+    pub writable_columns: HashSet<String>, // Columns that can be written by validators
     pub allowed_operations: HashSet<String>, // Operations allowed (select, insert, update, delete)
     pub allow_aggregations: bool,
     pub max_rows: Option<usize>,
@@ -89,10 +89,16 @@ impl ORMPermissions {
         let table_perms = challenge_perms
             .get(&query.table)
             .ok_or_else(|| anyhow::anyhow!("Access denied to table: {}", query.table))?;
-        
+
         // Check if operation is allowed
-        if !table_perms.allowed_operations.is_empty() && !table_perms.allowed_operations.contains(&query.operation) {
-            return Err(anyhow::anyhow!("Operation '{}' not allowed on table: {}", query.operation, query.table));
+        if !table_perms.allowed_operations.is_empty()
+            && !table_perms.allowed_operations.contains(&query.operation)
+        {
+            return Err(anyhow::anyhow!(
+                "Operation '{}' not allowed on table: {}",
+                query.operation,
+                query.table
+            ));
         }
 
         // Check column permissions based on operation type
@@ -102,7 +108,10 @@ impl ORMPermissions {
                 if let Some(values) = &query.values {
                     for col_val in values {
                         if !table_perms.writable_columns.contains(&col_val.column) {
-                            return Err(anyhow::anyhow!("Write access denied to column: {}", col_val.column));
+                            return Err(anyhow::anyhow!(
+                                "Write access denied to column: {}",
+                                col_val.column
+                            ));
                         }
                     }
                 }
@@ -112,11 +121,14 @@ impl ORMPermissions {
                 if let Some(set_values) = &query.set_values {
                     for col_val in set_values {
                         if !table_perms.writable_columns.contains(&col_val.column) {
-                            return Err(anyhow::anyhow!("Write access denied to column: {}", col_val.column));
+                            return Err(anyhow::anyhow!(
+                                "Write access denied to column: {}",
+                                col_val.column
+                            ));
                         }
                     }
                 }
-                
+
                 // Also check filter columns for updates
                 if let Some(filters) = &query.filters {
                     for filter in filters {
@@ -260,10 +272,7 @@ impl ORMPermissions {
                     "completed_at".to_string(),
                 ]),
                 writable_columns: HashSet::new(), // No write access by default
-                allowed_operations: HashSet::from([
-                    "select".to_string(),
-                    "count".to_string(),
-                ]),
+                allowed_operations: HashSet::from(["select".to_string(), "count".to_string()]),
                 allow_aggregations: true,
                 max_rows: Some(10000),
             },
@@ -286,10 +295,7 @@ impl ORMPermissions {
                     "created_at".to_string(),
                 ]),
                 writable_columns: HashSet::new(), // Read-only table
-                allowed_operations: HashSet::from([
-                    "select".to_string(),
-                    "count".to_string(),
-                ]),
+                allowed_operations: HashSet::from(["select".to_string(), "count".to_string()]),
                 allow_aggregations: true,
                 max_rows: Some(5000),
             },
@@ -310,10 +316,7 @@ impl ORMPermissions {
                     "created_at".to_string(),
                 ]),
                 writable_columns: HashSet::new(), // Read-only table
-                allowed_operations: HashSet::from([
-                    "select".to_string(),
-                    "count".to_string(),
-                ]),
+                allowed_operations: HashSet::from(["select".to_string(), "count".to_string()]),
                 allow_aggregations: false,
                 max_rows: Some(1000),
             },
@@ -321,11 +324,11 @@ impl ORMPermissions {
 
         permissions
     }
-    
+
     /// Permissions for validator job tracking tables
     pub fn validator_writable_permissions() -> HashMap<String, TablePermission> {
         let mut permissions = HashMap::new();
-        
+
         // Job executions table - validators can write their job progress
         permissions.insert(
             "job_executions".to_string(),
@@ -360,7 +363,7 @@ impl ORMPermissions {
                 max_rows: Some(10000),
             },
         );
-        
+
         // Job logs table - validators can write logs
         permissions.insert(
             "job_logs".to_string(),
@@ -390,7 +393,7 @@ impl ORMPermissions {
                 max_rows: Some(1000),
             },
         );
-        
+
         permissions
     }
 }

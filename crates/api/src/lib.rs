@@ -1,12 +1,5 @@
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
-    routing::{delete, get, post, put},
-    Router,
-};
+use axum::{extract::State, http::StatusCode, response::Json, Router};
 use serde_json::Value;
-use std::collections::HashMap;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -32,13 +25,7 @@ pub use state::*;
 
 /// Create the main API router
 pub fn create_router(state: AppState) -> Router {
-    use crate::middleware::security::*;
-
-    // Check if production mode
-    let is_production =
-        std::env::var("ENVIRONMENT_MODE").unwrap_or_else(|_| "dev".to_string()) == "prod";
-
-    let mut router = Router::new()
+    let router = Router::new()
         .merge(routes::challenges::create_router())
         .merge(routes::jobs::create_router())
         .merge(routes::attestation::create_router())
@@ -60,50 +47,23 @@ pub fn create_router(state: AppState) -> Router {
         .merge(routes::network::create_router())
         .merge(routes::validators::create_router());
 
-    // Apply security middleware ONLY in production
-    // In dev mode, NO authentication middleware is applied
-    if is_production {
-        use std::sync::Arc;
-        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-
-        let rate_limit_config = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(10)
-                .burst_size(20)
-                .finish()
-                .expect("Failed to create rate limiter config"),
-        );
-        let rate_limit = GovernorLayer {
-            config: rate_limit_config,
-        };
-
-        router = router
-            .layer(axum::middleware::from_fn(security_headers_middleware))
-            .layer(axum::middleware::from_fn(request_validation_middleware))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                jwt_auth_middleware,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                attestation_middleware,
-            ))
-            .layer(axum::middleware::from_fn(ip_whitelist_middleware))
-            .layer(rate_limit);
-    } else {
-        // In dev mode, log that no auth middleware is applied
-        tracing::info!("🔓 Development mode: No authentication middleware applied");
-    }
-
     // Apply CORS and tracing to all environments
     router
-        .layer(if is_production {
-            cors_layer()
-        } else {
-            CorsLayer::permissive()
-        })
+        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        .fallback(handle_404)
         .with_state(state)
+}
+
+/// Handle 404 Not Found
+async fn handle_404() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "Not Found",
+            "message": "The requested resource was not found on this server"
+        })),
+    )
 }
 
 /// Health check endpoint

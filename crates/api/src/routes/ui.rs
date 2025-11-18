@@ -5,9 +5,8 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use hex;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx;
@@ -144,101 +143,20 @@ pub fn create_router() -> Router<AppState> {
 }
 
 pub async fn create_render_link(
-    State(state): State<AppState>,
-    Json(request): Json<CreateRenderLinkRequest>,
+    State(_state): State<AppState>,
+    Json(_request): Json<CreateRenderLinkRequest>,
 ) -> Result<Json<CreateRenderLinkResponse>, StatusCode> {
-    // Check if JWT is disabled
-    if state.config.jwt_secret_ui == "disabled-no-jwt" || state.config.jwt_secret_ui.is_empty() {
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    }
-
-    let jti = Uuid::new_v4().to_string();
-    let expires_at = Utc::now() + Duration::minutes(5);
-
-    let secret = state.config.jwt_secret_ui.clone();
-    let signing_key = EncodingKey::from_secret(secret.as_bytes());
-
-    let claims = RenderLinkClaims {
-        sub: request.reviewer_id.clone(),
-        jti: jti.clone(),
-        aud: "challenge-render".to_string(),
-        exp: expires_at.timestamp() as usize,
-        iat: Utc::now().timestamp() as usize,
-        reviewer_id: request.reviewer_id.clone(),
-        challenge_id: request.challenge_id.to_string(),
-    };
-
-    let token = encode(&Header::new(Algorithm::HS256), &claims, &signing_key)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let render_url = format!("https://challenge-render.platform.ai?token={}", token);
-
-    Ok(Json(CreateRenderLinkResponse {
-        link_token: token,
-        render_url,
-        expires_at,
-    }))
+    // UI routes disabled - JWT removed, using random key-based authentication instead
+    Err(StatusCode::NOT_IMPLEMENTED)
 }
 
 pub async fn exchange_session(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _headers: HeaderMap,
-    Json(request): Json<ExchangeSessionRequest>,
+    Json(_request): Json<ExchangeSessionRequest>,
 ) -> Result<Response, StatusCode> {
-    // Check if JWT is disabled
-    if state.config.jwt_secret_ui == "disabled-no-jwt" || state.config.jwt_secret_ui.is_empty() {
-        return Err(StatusCode::NOT_IMPLEMENTED);
-    }
-
-    let secret = state.config.jwt_secret_ui.clone();
-    let decoding_key = DecodingKey::from_secret(secret.as_bytes());
-
-    let token_data = decode::<RenderLinkClaims>(
-        &request.link_token,
-        &decoding_key,
-        &Validation::new(Algorithm::HS256),
-    )
-    .map_err(|_| StatusCode::UNAUTHORIZED)?;
-
-    let claims = token_data.claims;
-
-    let session_id = Uuid::new_v4().to_string();
-    let expires_at = Utc::now() + Duration::minutes(15);
-
-    let session_claims = SessionClaims {
-        sub: claims.reviewer_id.clone(),
-        jti: session_id.clone(),
-        aud: "challenge-render".to_string(),
-        exp: expires_at.timestamp() as usize,
-        iat: Utc::now().timestamp() as usize,
-        reviewer_id: claims.reviewer_id,
-        challenge_id: claims.challenge_id,
-    };
-
-    let signing_key = EncodingKey::from_secret(secret.as_bytes());
-    let session_token = encode(
-        &Header::new(Algorithm::HS256),
-        &session_claims,
-        &signing_key,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let response = ExchangeSessionResponse {
-        session_id,
-        expires_at,
-    };
-
-    let cookie_value = format!(
-        "ui_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=900",
-        session_token
-    );
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Set-Cookie", cookie_value)
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(&response).unwrap().into())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    // UI routes disabled - JWT removed, using random key-based authentication instead
+    Err(StatusCode::NOT_IMPLEMENTED)
 }
 
 pub async fn get_challenge_review_data(

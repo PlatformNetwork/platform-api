@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -10,7 +10,6 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::job_distributor::{DistributeJobRequest, JobDistributor};
-use crate::redis_client::RedisClient;
 use crate::state::AppState;
 use platform_api_models::{
     ClaimJobRequest, ClaimJobResponse, JobListResponse, JobMetadata, JobStats, SubmitResultRequest,
@@ -36,7 +35,10 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/jobs/:id/resource-usage", get(get_resource_usage))
         .route("/api/jobs/next", get(get_next_job))
         .route("/api/jobs/stats", get(get_job_stats))
-        .route("/api/jobs/challenge/create-job", post(create_job_from_challenge))
+        .route(
+            "/api/jobs/challenge/create-job",
+            post(create_job_from_challenge),
+        )
         .route("/challenge/create-job", post(create_job_from_challenge)) // Legacy route for backward compatibility
 }
 
@@ -253,35 +255,40 @@ pub async fn get_pending_jobs(
         .scheduler
         .list_jobs(1, 100, Some("pending".to_string()), None)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!("Failed to list pending jobs: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // Extract payload information from JobMetadata (now includes payload field)
     let mut jobs_with_payloads = Vec::new();
-    
-        for job in &jobs.jobs {
-            // Extract submission_id and miner_hotkey from payload
-        let submission_id = job.payload
-                .as_ref()
-                .and_then(|p| p.get("session_id"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| job.id.to_string()); // Fallback to job id
-            
-        let miner_hotkey = job.payload
-                .as_ref()
-                .and_then(|p| p.get("agent_hash"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "unknown".to_string()); // Fallback to "unknown"
-            
-            jobs_with_payloads.push(serde_json::json!({
-                "id": job.id.to_string(),
-                "challenge_id": job.challenge_id.to_string(),
-                "submission_id": submission_id,
-                "miner_hotkey": miner_hotkey,
-                "status": format!("{:?}", job.status).to_lowercase(),
-                "created_at": job.created_at.to_rfc3339(),
-            }));
+
+    for job in &jobs.jobs {
+        // Extract submission_id and miner_hotkey from payload
+        let submission_id = job
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("session_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| job.id.to_string()); // Fallback to job id
+
+        let miner_hotkey = job
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("agent_hash"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string()); // Fallback to "unknown"
+
+        jobs_with_payloads.push(serde_json::json!({
+            "id": job.id.to_string(),
+            "challenge_id": job.challenge_id.to_string(),
+            "submission_id": submission_id,
+            "miner_hotkey": miner_hotkey,
+            "status": format!("{:?}", job.status).to_lowercase(),
+            "created_at": job.created_at.to_rfc3339(),
+        }));
     }
 
     Ok(Json(serde_json::json!({
@@ -509,24 +516,29 @@ pub async fn create_job_from_challenge(
     } else {
         // Try to find challenge by name in database
         if let Some(pool) = &state.database_pool {
-            let result: Option<Uuid> = sqlx::query_scalar(
-                "SELECT id FROM challenges WHERE name = $1 LIMIT 1"
-            )
-            .bind(&request.challenge_id)
-            .fetch_optional(pool.as_ref())
-            .await
-            .ok()
-            .flatten();
-            
+            let result: Option<Uuid> =
+                sqlx::query_scalar("SELECT id FROM challenges WHERE name = $1 LIMIT 1")
+                    .bind(&request.challenge_id)
+                    .fetch_optional(pool.as_ref())
+                    .await
+                    .ok()
+                    .flatten();
+
             match result {
                 Some(uuid) => uuid,
                 None => {
-                    tracing::error!("Challenge not found by name or UUID: {}", request.challenge_id);
+                    tracing::error!(
+                        "Challenge not found by name or UUID: {}",
+                        request.challenge_id
+                    );
                     return Err(StatusCode::BAD_REQUEST);
                 }
             }
         } else {
-            tracing::error!("Database pool not available and challenge_id is not a UUID: {}", request.challenge_id);
+            tracing::error!(
+                "Database pool not available and challenge_id is not a UUID: {}",
+                request.challenge_id
+            );
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
@@ -553,15 +565,13 @@ pub async fn create_job_from_challenge(
 
     // Try to get challenge info and distribute job
     let challenge_id = request.challenge_id.clone();
-    
+
     // Try to get compose_hash from challenge registry (by UUID or by name)
     let compose_hash = {
         let registry = state.challenge_registry.read().await;
         registry
             .values()
-            .find(|spec| {
-                spec.id == challenge_uuid || spec.name == challenge_id
-            })
+            .find(|spec| spec.id == challenge_uuid || spec.name == challenge_id)
             .map(|spec| spec.compose_hash.clone())
             .unwrap_or_else(|| "unknown".to_string())
     };

@@ -37,7 +37,7 @@ impl KeyBrokerService {
         let mut key_bytes = vec![0u8; 32];
         self.random
             .fill(&mut key_bytes)
-            .context("Failed to generate random key")?;
+            .map_err(|_| anyhow::anyhow!("Failed to generate random key"))?;
 
         let session_token = request.session_token.clone();
         let expires_at =
@@ -107,7 +107,6 @@ pub struct KbsConfig {
     pub key_size: u32,
     pub session_timeout: u64,
     pub max_sessions: u32,
-    pub encryption_key: String,
 }
 
 impl Default for KbsConfig {
@@ -117,7 +116,6 @@ impl Default for KbsConfig {
             key_size: 256,
             session_timeout: 300,
             max_sessions: 1000,
-            encryption_key: "change-me-in-production".to_string(),
         }
     }
 }

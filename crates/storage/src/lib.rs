@@ -560,7 +560,9 @@ impl StorageBackend for MemoryStorageBackend {
     }
 
     async fn get_vm_compose_config(&self, _vm_type: &str) -> Result<VmComposeConfig> {
-        Err(anyhow::anyhow!("VM compose config not available in memory backend"))
+        Err(anyhow::anyhow!(
+            "VM compose config not available in memory backend"
+        ))
     }
 }
 

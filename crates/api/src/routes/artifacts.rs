@@ -7,8 +7,7 @@ use axum::{
     Router,
 };
 use hex;
-use platform_api_models::AttestationStatus;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use uuid::Uuid;
 
 /// Create artifacts router
@@ -41,11 +40,15 @@ pub async fn download_artifact(
         StatusCode::BAD_REQUEST
     })?;
 
-    // Decode and verify JWT token
-    let claims = state.attestation.verify_token(token).map_err(|e| {
-        tracing::error!("Token verification failed: {}", e);
-        StatusCode::UNAUTHORIZED
-    })?;
+    // Verify token (using random key-based authentication)
+    let claims = state
+        .attestation
+        .verify_token_async(token)
+        .await
+        .map_err(|e| {
+            tracing::error!("Token verification failed: {}", e);
+            StatusCode::UNAUTHORIZED
+        })?;
 
     // Extract app_id and instance_id from verified token
     let app_id = claims

@@ -23,4 +23,5 @@ thiserror = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid"] }
 hex = { workspace = true }
+serde_yaml = "0.9"
 

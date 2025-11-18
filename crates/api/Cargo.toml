@@ -50,7 +50,6 @@ hex = { workspace = true }
 
 # WebSocket client
 tokio-tungstenite = { version = "0.23", features = ["native-tls"] }
-jsonwebtoken = { workspace = true }
 sha2 = "0.10"
 
 # Cryptography
@@ -61,8 +60,6 @@ chacha20poly1305 = "0.10"
 hkdf = "0.12"
 url = "2.5"
 
-# TDX/DCAP verification
-dcap-qvl = "0.3"
 
 # Substrate for signature verification
 sp-core = { workspace = true }
@@ -85,4 +82,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki",
 
 # Redis
 redis = { workspace = true }
+
+# Dstack types
+dstack-types = { workspace = true }
 

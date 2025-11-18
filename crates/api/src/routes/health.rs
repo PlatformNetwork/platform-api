@@ -15,7 +15,7 @@ pub fn create_router() -> Router<AppState> {
 }
 
 /// Health check endpoint
-pub async fn health_check(State(state): State<AppState>) -> Json<Value> {
+pub async fn health_check(State(state): State<AppState>) -> Result<Json<Value>, StatusCode> {
     let health_status = HealthStatus {
         status: "healthy".to_string(),
         timestamp: chrono::Utc::now(),
@@ -24,7 +24,10 @@ pub async fn health_check(State(state): State<AppState>) -> Json<Value> {
         services: get_service_status(&state).await,
     };
 
-    Json(serde_json::to_value(health_status).unwrap())
+    serde_json::to_value(health_status).map(Json).map_err(|e| {
+        tracing::error!("Failed to serialize health status: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 /// Readiness check endpoint
@@ -39,14 +42,17 @@ pub async fn readiness_check(State(state): State<AppState>) -> Result<Json<Value
 }
 
 /// Liveness check endpoint
-pub async fn liveness_check() -> Json<Value> {
+pub async fn liveness_check() -> Result<Json<Value>, StatusCode> {
     let liveness = LivenessStatus {
         status: "alive".to_string(),
         timestamp: chrono::Utc::now(),
         uptime: get_uptime(),
     };
 
-    Json(serde_json::to_value(liveness).unwrap())
+    serde_json::to_value(liveness).map(Json).map_err(|e| {
+        tracing::error!("Failed to serialize liveness status: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 /// Metrics endpoint
@@ -58,13 +64,11 @@ pub async fn metrics(State(state): State<AppState>) -> Result<String, StatusCode
 }
 
 /// Version info endpoint - Returns Docker commit SHA and public key for verification
-pub async fn version_info(State(state): State<AppState>) -> Json<Value> {
-    // Get public key from security module
-    let public_key = state.security.get_public_key();
-    let public_key_hex = hex::encode(&public_key);
-
-    // Get compose_hash from TDX attestation
-    let compose_hash = state.security.get_compose_hash();
+/// TEMPORARY: Using mock values until key extraction issue is resolved
+pub async fn version_info(State(_state): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    // TEMPORARY: Return mock values
+    let public_key_hex = "0000000000000000000000000000000000000000000000000000000000000000"; // Mock public key (64 hex chars = 32 bytes)
+    let compose_hash = "mock-compose-hash-temporary"; // Mock compose hash
 
     // Package version from Cargo
     let cargo_version = env!("CARGO_PKG_VERSION");
@@ -72,20 +76,16 @@ pub async fn version_info(State(state): State<AppState>) -> Json<Value> {
     // Get git commit if available
     let git_commit = option_env!("GIT_COMMIT").unwrap_or("unknown");
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "platform_api": {
             "cargo_version": cargo_version,
             "git_commit": git_commit,
-            "compose_hash": compose_hash,  // Hash of Docker Compose (attested by TDX)
+            "compose_hash": compose_hash,  // Mock compose hash (temporary)
             "build_time": option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown"),
-            "public_key": public_key_hex,  // Public key for verification
+            "public_key": public_key_hex,  // Mock public key (temporary)
         },
-        "warning": if compose_hash == "unknown" {
-            "Compose hash not available - cannot verify Docker image integrity"
-        } else {
-            ""
-        }
-    }))
+        "warning": "Using temporary mock values - key extraction disabled"
+    })))
 }
 
 /// Health status structure
@@ -125,7 +125,6 @@ struct LivenessStatus {
 
 /// Get application uptime in seconds
 fn get_uptime() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
 
     static START_TIME: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
