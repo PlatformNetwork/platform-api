@@ -1,0 +1,29 @@
+[package]
+name = "platform-api-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Internal dependencies
+platform-api-models = { workspace = true }
+platform-api-orm-gateway = { workspace = true }
+platform-api-storage = { workspace = true }
+platform-api-attestation = { workspace = true }
+platform-api-kbs = { workspace = true }
+platform-api-scheduler = { workspace = true }
+platform-api-builder = { workspace = true }
+
+# Core dependencies
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid"] }
+

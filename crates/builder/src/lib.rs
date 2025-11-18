@@ -4,7 +4,6 @@ use platform_api_models::{
     ChallengeMetadata, ChallengePort, ChallengeResources, ChallengeStatus, ChallengeVisibility,
     CreateChallengeRequest, UpdateChallengeRequest,
 };
-use serde_yaml;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::BTreeMap;

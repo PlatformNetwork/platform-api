@@ -4,9 +4,8 @@ use hex;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sp_core::{crypto::Ss58Codec, sr25519};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-use crate::services::dstack_verifier::VerificationRequest;
 use crate::services::DstackVerifierClient;
 use crate::state::AppState;
 use dstack_types::VmConfig;
@@ -167,8 +166,8 @@ pub fn verify_challenge_binding(
 ) -> bool {
     report_data_hex == expected_challenge
         || report_data_hex == challenge_hash
-        || report_data_hex.starts_with(&challenge_hash as &str)
-        || report_data_hex.starts_with(&expected_challenge as &str)
+        || report_data_hex.starts_with(challenge_hash as &str)
+        || report_data_hex.starts_with(expected_challenge as &str)
         || (report_data_hex.len() >= 64 && &report_data_hex[..64] == challenge_hash)
 }
 
@@ -200,7 +199,10 @@ async fn verify_validator_with_dstack_verifier(
     let validator_compose_hash = extract_compose_hash_from_event_log(event_log)
         .ok_or_else(|| anyhow::anyhow!("Missing compose-hash in event log"))?;
 
-    info!("Validator reported compose hash: {}", validator_compose_hash);
+    info!(
+        "Validator reported compose hash: {}",
+        validator_compose_hash
+    );
 
     // Get expected compose config from DB
     let db_compose_config = state
@@ -209,7 +211,10 @@ async fn verify_validator_with_dstack_verifier(
         .await
         .context("Failed to retrieve validator_vm compose config from DB")?;
 
-    info!("Retrieved compose config from DB for vm_type: {}", db_compose_config.vm_type);
+    info!(
+        "Retrieved compose config from DB for vm_type: {}",
+        db_compose_config.vm_type
+    );
 
     // Build provisioning bundle (same logic as config.rs)
     let mut env_keys: Vec<String> = ["DSTACK_VMM_URL", "HOTKEY_PASSPHRASE", "VALIDATOR_BASE_URL"]
@@ -245,7 +250,7 @@ async fn verify_validator_with_dstack_verifier(
     // Calculate expected compose hash (same method as deploy.rs)
     let app_compose_str =
         serde_json::to_string(&app_compose).context("Failed to serialize app_compose")?;
-    
+
     let mut hasher = Sha256::new();
     hasher.update(app_compose_str.as_bytes());
     let expected_compose_hash = hex::encode(hasher.finalize());
@@ -257,8 +262,7 @@ async fn verify_validator_with_dstack_verifier(
         // TEMPORARY: Allow validators with mismatched compose hashes during migration
         warn!(
             "Compose hash mismatch (temporarily allowed): validator={}, expected={}",
-            validator_compose_hash,
-            expected_compose_hash
+            validator_compose_hash, expected_compose_hash
         );
         // TODO: Re-enable strict verification once all validators are updated
         // return Err(anyhow::anyhow!(
@@ -284,12 +288,10 @@ async fn verify_validator_with_dstack_verifier(
             .quote
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing quote for challenge verification"))?;
-        
+
         let quote_bytes = match base64_engine.decode(quote) {
             Ok(bytes) => bytes,
-            Err(_) => {
-                hex::decode(quote).context("Failed to decode quote as base64 or hex")?
-            }
+            Err(_) => hex::decode(quote).context("Failed to decode quote as base64 or hex")?,
         };
 
         // Calculate expected SHA256 of challenge
@@ -300,7 +302,7 @@ async fn verify_validator_with_dstack_verifier(
         // Check if report_data in quote matches challenge (report_data is at offset 568-632)
         if quote_bytes.len() >= 632 {
             let report_data_slice = &quote_bytes[568..632];
-            if &report_data_slice[..32] != &expected_hash[..] {
+            if report_data_slice[..32] != expected_hash[..] {
                 return Err(anyhow::anyhow!(
                     "Challenge verification failed: report_data in quote does not match SHA256(challenge)"
                 ));

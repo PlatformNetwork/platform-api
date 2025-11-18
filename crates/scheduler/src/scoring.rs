@@ -1,10 +1,8 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use platform_api_models::*;
 use reqwest::Client;
 use std::collections::HashMap;
-use tracing::{error, info, warn};
-use uuid::Uuid;
+use tracing::{error, info};
 
 /// Scoring service for triggering challenge scoring runs
 pub struct ScoringService {
@@ -79,7 +77,7 @@ impl ScoringService {
         // Try to contact challenge API with 60s timeout
         match self
             .client
-            .get(&format!("{}/score", challenge_url))
+            .get(format!("{}/score", challenge_url))
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await

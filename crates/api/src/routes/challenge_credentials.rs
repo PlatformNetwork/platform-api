@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use x25519_dalek::PublicKey;
 
-use crate::{
-    challenge_migrations::{MigrationOrchestrator, MigrationRequest},
-    state::AppState,
-};
+use crate::challenge_migrations::{MigrationOrchestrator, MigrationRequest};
+use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct CredentialRequest {
@@ -205,7 +203,7 @@ fn encrypt_credentials(
     Ok(EncryptedCredentials {
         encrypted_data: base64.encode(&ciphertext),
         ephemeral_public_key: base64.encode(ephemeral_public.as_bytes()),
-        nonce: base64.encode(&nonce_bytes),
+        nonce: base64.encode(nonce_bytes),
     })
 }
 

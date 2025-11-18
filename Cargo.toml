@@ -8,6 +8,12 @@ members = [
     "crates/scheduler",
     "crates/autoscaler",
     "crates/models",
+    "crates/websocket",
+    "crates/orm-gateway",
+    "crates/challenge-runner",
+    "crates/routes",
+    "crates/crypto",
+    "crates/config",
     "bins/platform-api-server",
 ]
 resolver = "2"
@@ -29,10 +35,17 @@ platform-api-kbs = { path = "crates/kbs" }
 platform-api-scheduler = { path = "crates/scheduler" }
 platform-api-autoscaler = { path = "crates/autoscaler" }
 platform-api-builder = { path = "crates/builder" }
+platform-api-websocket = { path = "crates/websocket" }
+platform-api-orm-gateway = { path = "crates/orm-gateway" }
+platform-api-challenge-runner = { path = "crates/challenge-runner" }
+platform-api-routes = { path = "crates/routes" }
+platform-api-core = { path = "crates/api-core" }
+platform-api-crypto = { path = "crates/crypto" }
+platform-api-config = { path = "crates/config" }
 
 # Core dependencies
 anyhow = "1.0"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
 axum = { version = "0.7", features = ["macros", "ws"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
@@ -74,11 +87,7 @@ sp-core = "38.1"
 sp-runtime = "44.0"
 
 # Bittensor SDK for metagraph sync
-# Use local path for development (change to git for production)
-# Note: In Docker build, bittensor-rs is copied to /build/bittensor-rs
-# In local development, use ../bittensor-rs
-bittensor-rs = { path = "../bittensor-rs" }
-# bittensor-rs = { git = "https://github.com/CortexLM/bittensor-rs" }
+bittensor-rs = { git = "https://github.com/CortexLM/bittensor-rs" }
 
 # x509 parser for certificates
 x509-parser = "0.16"
@@ -112,9 +121,17 @@ dstack-guest-agent-rpc = { git = "https://github.com/Dstack-TEE/dstack", package
 dstack-vmm-rpc = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-vmm-rpc" }
 dstack-mr = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-mr" }
 
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 
 

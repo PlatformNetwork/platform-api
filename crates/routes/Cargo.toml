@@ -1,0 +1,70 @@
+[package]
+name = "platform-api-routes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Internal dependencies
+platform-api-models = { workspace = true }
+platform-api-storage = { workspace = true }
+platform-api-attestation = { workspace = true }
+platform-api-scheduler = { workspace = true }
+platform-api-kbs = { workspace = true }
+platform-api-builder = { workspace = true }
+platform-api = { path = "../api" }
+platform-api-websocket = { path = "../websocket" }
+platform-api-orm-gateway = { path = "../orm-gateway" }
+platform-api-challenge-runner = { path = "../challenge-runner" }
+
+# Web framework
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Core dependencies
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid"] }
+
+# Utilities
+base64 = "0.22"
+tempfile = "3.10"
+hex = { workspace = true }
+sha2 = { workspace = true }
+futures-util = "0.3"
+
+# Cryptography
+ring = { workspace = true }
+chacha20poly1305 = "0.10"
+x25519-dalek = "2.0"
+rand = { workspace = true }
+hkdf = "0.12"
+
+# Substrate for signature verification
+sp-core = { workspace = true }
+sp-runtime = { workspace = true }
+
+# Redis
+redis = { workspace = true }
+
+# Bittensor SDK
+bittensor-rs = { workspace = true }
+
+# Dstack types
+dstack-types = { workspace = true }
+

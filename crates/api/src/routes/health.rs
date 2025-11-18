@@ -128,7 +128,7 @@ fn get_uptime() -> u64 {
     use std::sync::OnceLock;
 
     static START_TIME: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
-    START_TIME.get_or_init(|| chrono::Utc::now());
+    START_TIME.get_or_init(chrono::Utc::now);
 
     let start = START_TIME.get().unwrap();
     chrono::Utc::now()

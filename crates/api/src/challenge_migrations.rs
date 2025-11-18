@@ -160,7 +160,7 @@ impl MigrationOrchestrator {
         .bind(&migration.version)
         .bind(&migration.name)
         .bind(&migration.checksum)
-        .bind(&applied_at)
+        .bind(applied_at)
         .execute(&mut *tx)
         .await?;
 

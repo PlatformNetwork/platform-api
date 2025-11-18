@@ -1,0 +1,27 @@
+[package]
+name = "platform-api-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Internal dependencies
+platform-api-models = { workspace = true }
+
+# Core dependencies
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+toml = { workspace = true }
+serde_yaml = "0.9"
+
+# Utilities
+tracing = { workspace = true }
+

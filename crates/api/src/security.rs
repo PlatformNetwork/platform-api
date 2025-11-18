@@ -72,7 +72,7 @@ impl PlatformSecurity {
         tracing::info!("   Compose hash: {} (random, not verified)", compose_hash);
         tracing::info!(
             "   Public key: {} ({} bytes)",
-            hex::encode(&public_key_bytes),
+            hex::encode(public_key_bytes),
             public_key_bytes.len()
         );
 

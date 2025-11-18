@@ -4,13 +4,7 @@ use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use tracing::info;
 
-pub mod permissions;
-pub mod query_executor;
-pub mod query_validator;
-
-pub use permissions::{ORMPermissions, TablePermission};
-pub use query_executor::QueryExecutor;
-pub use query_validator::QueryValidator;
+use crate::{executor::QueryExecutor, permissions::{ORMPermissions, TablePermission}, query_validator::QueryValidator};
 
 /// Configuration for ORM Gateway
 #[derive(Debug, Clone, Serialize, Deserialize)]

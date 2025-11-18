@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -7,78 +6,41 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 pub mod challenge_ws;
+pub mod ws; // WebSocket client module (split from challenge_ws.rs)
 pub mod cvm_manager;
 pub mod migrations;
+pub mod runner;
 
 pub use challenge_ws::ChallengeWsClient;
 pub use cvm_manager::CvmManager;
 pub use migrations::MigrationRunner;
-
-/// Challenge instance running in API mode
-#[derive(Debug, Clone)]
-pub struct ChallengeInstance {
-    pub challenge_id: String,
-    pub name: String,
-    pub version: String,
-    pub compose_hash: String,
-    pub cvm_instance_id: Option<String>,
-    pub cvm_api_url: Option<String>,
-    pub schema_name: String,
-    pub db_version: Option<u32>, // Database version from challenge SDK (set_db_version)
-    pub is_running: bool,
-    pub ws_started: bool, // WebSocket connection to challenge CVM started
-}
-
-/// Configuration for challenge runner
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChallengeRunnerConfig {
-    pub enabled: bool,
-    pub vmm_url: String,
-    pub gateway_url: String,
-    pub max_concurrent_challenges: usize,
-    pub migration_timeout: u64,
-    pub cvm_check_interval: u64,
-}
-
-impl Default for ChallengeRunnerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            vmm_url: "http://127.0.0.1:11530".to_string(),
-            gateway_url: "https://gateway.platform.network".to_string(),
-            max_concurrent_challenges: 10,
-            migration_timeout: 300, // 5 minutes
-            cvm_check_interval: 30, // 30 seconds
-        }
-    }
-}
+pub use runner::{
+    ChallengeInstance, ChallengeRunnerConfig, ChallengeMetadata, ChallengeStatus,
+};
 
 /// Challenge runner for API mode execution
 pub struct ChallengeRunner {
-    config: ChallengeRunnerConfig,
-    challenges: tokio::sync::RwLock<HashMap<String, ChallengeInstance>>, // Key: compose_hash
-    db_pool: PgPool,
-    migration_runner: MigrationRunner,
-    cvm_manager: CvmManager,
-    orm_gateway: Option<Arc<tokio::sync::RwLock<crate::orm_gateway::SecureORMGateway>>>, // ORM gateway for query bridge
-    validator_challenge_status: Option<
+    pub config: runner::types::ChallengeRunnerConfig,
+    pub challenges: tokio::sync::RwLock<HashMap<String, ChallengeInstance>>, // Key: compose_hash
+    pub db_pool: PgPool,
+    pub migration_runner: MigrationRunner,
+    pub cvm_manager: CvmManager,
+    pub orm_gateway: Option<Arc<tokio::sync::RwLock<platform_api_orm_gateway::SecureORMGateway>>>, // ORM gateway for query bridge
+    pub validator_challenge_status: Option<
         Arc<
             tokio::sync::RwLock<
-                std::collections::HashMap<
+                HashMap<
                     String,
-                    std::collections::HashMap<
-                        String,
-                        platform_api_models::ValidatorChallengeStatus,
-                    >,
+                    HashMap<String, platform_api_models::ValidatorChallengeStatus>,
                 >,
             >,
         >,
     >, // Validator challenge status for get_validator_count
-    redis_client: Option<Arc<crate::redis_client::RedisClient>>, // Redis client for job progress logging
-    validator_connections: Option<
+    pub redis_client: Option<Arc<crate::redis_client::RedisClient>>, // Redis client for job progress logging
+    pub validator_connections: Option<
         Arc<
             tokio::sync::RwLock<
-                std::collections::HashMap<String, crate::state::ValidatorConnection>,
+                HashMap<String, crate::state::ValidatorConnection>,
             >,
         >,
     >, // Validator connections for getting connected validators
@@ -86,18 +48,15 @@ pub struct ChallengeRunner {
 
 impl ChallengeRunner {
     pub fn new(
-        config: ChallengeRunnerConfig,
+        config: runner::types::ChallengeRunnerConfig,
         db_pool: PgPool,
-        orm_gateway: Option<Arc<tokio::sync::RwLock<crate::orm_gateway::SecureORMGateway>>>,
+        orm_gateway: Option<Arc<tokio::sync::RwLock<platform_api_orm_gateway::SecureORMGateway>>>,
         validator_challenge_status: Option<
             Arc<
                 tokio::sync::RwLock<
-                    std::collections::HashMap<
+                    HashMap<
                         String,
-                        std::collections::HashMap<
-                            String,
-                            platform_api_models::ValidatorChallengeStatus,
-                        >,
+                        HashMap<String, platform_api_models::ValidatorChallengeStatus>,
                     >,
                 >,
             >,
@@ -106,7 +65,7 @@ impl ChallengeRunner {
         validator_connections: Option<
             Arc<
                 tokio::sync::RwLock<
-                    std::collections::HashMap<String, crate::state::ValidatorConnection>,
+                    HashMap<String, crate::state::ValidatorConnection>,
                 >,
             >,
         >,
@@ -287,8 +246,7 @@ impl ChallengeRunner {
             // Create schema_name_arc outside the if block so it's accessible later
             let normalized_name = challenge_name_for_ws
                 .to_lowercase()
-                .replace('-', "_")
-                .replace('.', "_")
+                .replace(['-', '.'], "_")
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_')
                 .collect::<String>();
@@ -392,8 +350,7 @@ impl ChallengeRunner {
             let normalized_name = challenge
                 .name
                 .to_lowercase()
-                .replace('-', "_")
-                .replace('.', "_")
+                .replace(['-', '.'], "_")
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_')
                 .collect::<String>();
@@ -787,27 +744,4 @@ impl ChallengeRunner {
 
         Ok(credentials)
     }
-}
-
-/// Challenge metadata
-#[derive(Debug, Clone)]
-struct ChallengeMetadata {
-    name: String,
-    version: String,
-    github_repo: String,
-    compose_hash: String,
-    dstack_image: Option<String>,
-    images: Vec<String>,
-    compose_yaml: String,
-}
-
-/// Challenge status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChallengeStatus {
-    pub challenge_id: String,
-    pub is_running: bool,
-    pub is_healthy: bool,
-    pub schema_name: String,
-    pub version: String,
-    pub cvm_instance_id: Option<String>,
 }

@@ -138,7 +138,7 @@ impl CvmManager {
             if let Some(service_name) = service_name_opt {
                 if let Some(service) = services.get_mut(&service_name) {
                     // Ensure environment section exists
-                    if !service.get("environment").is_some() {
+                    if service.get("environment").is_none() {
                         service["environment"] = serde_yaml::Value::Sequence(Vec::new());
                     }
 
@@ -158,7 +158,7 @@ impl CvmManager {
                             }
                         });
                         // Add new values
-                        env.push(serde_yaml::Value::String(format!("CHALLENGE_ADMIN=true")));
+                        env.push(serde_yaml::Value::String("CHALLENGE_ADMIN=true".to_string()));
                         env.push(serde_yaml::Value::String(format!(
                             "CHALLENGE_ID={}",
                             challenge_id
@@ -405,7 +405,7 @@ impl CvmManager {
 
         let response = self
             .http_client
-            .post(&format!(
+            .post(format!(
                 "{}/sdk/admin/db/credentials",
                 cvm_api_url.trim_end_matches('/')
             ))
@@ -434,7 +434,7 @@ impl CvmManager {
 
         let response = self
             .http_client
-            .get(&format!(
+            .get(format!(
                 "{}/sdk/admin/migrations",
                 cvm_api_url.trim_end_matches('/')
             ))
@@ -457,7 +457,7 @@ impl CvmManager {
 
         let response = self
             .http_client
-            .post(&format!("{}/prpc/RemoveVm?json", self.vmm_url))
+            .post(format!("{}/prpc/RemoveVm?json", self.vmm_url))
             .json(&serde_json::json!({"id": instance_id}))
             .send()
             .await

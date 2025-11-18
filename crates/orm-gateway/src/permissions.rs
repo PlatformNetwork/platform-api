@@ -22,6 +22,12 @@ pub struct ORMPermissions {
     permissions: HashMap<String, HashMap<String, TablePermission>>,
 }
 
+impl Default for ORMPermissions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ORMPermissions {
     pub fn new() -> Self {
         Self {

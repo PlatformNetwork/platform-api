@@ -114,7 +114,7 @@ impl CapacityMatcher {
             node.capacity.available_disk_gb as f64 / node.capacity.total_disk_gb as f64;
 
         // Weighted average (CPU most important)
-        let score = (cpu_score * 0.5 + memory_score * 0.3 + disk_score * 0.2);
+        let score = cpu_score * 0.5 + memory_score * 0.3 + disk_score * 0.2;
 
         Some(score)
     }

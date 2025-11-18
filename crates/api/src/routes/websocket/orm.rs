@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::orm_gateway::{ORMQuery, SecureORMGateway, TablePermission};
+use platform_api_orm_gateway::{ORMQuery, SecureORMGateway, TablePermission};
 use crate::state::AppState;
 use std::collections::HashMap;
 

@@ -11,7 +11,7 @@ pub mod handlers;
 pub mod job_distributor;
 pub mod middleware;
 pub mod models;
-pub mod orm_gateway;
+// ORM Gateway moved to platform-api-orm-gateway crate
 pub mod redis_client;
 pub mod routes;
 pub mod security;

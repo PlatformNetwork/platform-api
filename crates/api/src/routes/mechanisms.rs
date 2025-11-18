@@ -126,7 +126,7 @@ pub async fn list_mechanisms(
 
         mechanisms_map
             .entry(challenge.mechanism_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(challenge_data);
     }
 

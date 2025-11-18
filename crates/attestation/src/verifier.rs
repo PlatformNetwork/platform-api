@@ -122,7 +122,7 @@ impl TdxVerifier {
             let expected_nonce_hash = hasher.finalize();
 
             // TDX places SHA256(nonce) in the first 32 bytes of report_data
-            if report_data.len() < 32 || &report_data[..32] != &expected_nonce_hash[..] {
+            if report_data.len() < 32 || report_data[..32] != expected_nonce_hash[..] {
                 return Ok(VerificationResult {
                     is_valid: false,
                     measurements: request.measurements.clone(),

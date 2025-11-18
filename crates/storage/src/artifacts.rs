@@ -1,4 +1,4 @@
-use crate::encryption::{decrypt_artifact, encrypt_artifact, EncryptedArtifact};
+use crate::encryption::{encrypt_artifact, EncryptedArtifact};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -15,6 +15,12 @@ struct StoredArtifact {
     encrypted_data: EncryptedArtifact,
     digest: String,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Default for ArtifactStorage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ArtifactStorage {

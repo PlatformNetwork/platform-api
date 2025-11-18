@@ -15,7 +15,7 @@ use sp_core::{
 };
 use tracing::{error, info, warn};
 
-use crate::routes::metagraph::get_metagraph_cache;
+use crate::metagraph::get_metagraph_cache;
 use crate::state::AppState;
 
 /// Serialize JSON with sorted keys to match Python's json.dumps(..., sort_keys=True)
@@ -220,7 +220,7 @@ async fn proxy_get_to_challenge(
     let challenge_runner = state
         .challenge_runner
         .as_ref()
-        .ok_or_else(|| SignatureError::ChallengeNotFound)?;
+        .ok_or(SignatureError::ChallengeNotFound)?;
 
     // Find challenge by name or ID using public method
     let running_challenges = challenge_runner.list_running_challenges().await;
@@ -244,7 +244,7 @@ async fn proxy_get_to_challenge(
     let cvm_api_url = instance
         .cvm_api_url
         .as_ref()
-        .ok_or_else(|| SignatureError::CvmUnavailable)?;
+        .ok_or(SignatureError::CvmUnavailable)?;
 
     // Build target URL: {cvm_api_url}/sdk/public/{route_name}?{query_params}
     let target_url = if query_params.is_empty() {
@@ -336,7 +336,7 @@ async fn proxy_to_challenge(
     let challenge_runner = state
         .challenge_runner
         .as_ref()
-        .ok_or_else(|| SignatureError::ChallengeNotFound)?;
+        .ok_or(SignatureError::ChallengeNotFound)?;
 
     // Find challenge by name or ID using public method
     let running_challenges = challenge_runner.list_running_challenges().await;
@@ -360,7 +360,7 @@ async fn proxy_to_challenge(
     let cvm_api_url = instance
         .cvm_api_url
         .as_ref()
-        .ok_or_else(|| SignatureError::CvmUnavailable)?;
+        .ok_or(SignatureError::CvmUnavailable)?;
 
     // Build target URL: {cvm_api_url}/sdk/public/{route_name}
     let target_url = format!(

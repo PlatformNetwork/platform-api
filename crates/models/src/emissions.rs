@@ -1,4 +1,4 @@
-use super::{Hotkey, Id, Score};
+use super::{Hotkey, Id};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

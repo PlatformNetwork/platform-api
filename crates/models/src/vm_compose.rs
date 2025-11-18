@@ -34,6 +34,7 @@ pub struct VmComposeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct VmProvisioningBundle {
     #[serde(default)]
     pub env_keys: Vec<String>,
@@ -41,15 +42,6 @@ pub struct VmProvisioningBundle {
     pub vm_parameters: VmHardwareSpec,
 }
 
-impl Default for VmProvisioningBundle {
-    fn default() -> Self {
-        Self {
-            env_keys: Vec::new(),
-            manifest_defaults: VmManifestDefaults::default(),
-            vm_parameters: VmHardwareSpec::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VmManifestDefaults {

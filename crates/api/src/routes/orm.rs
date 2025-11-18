@@ -8,7 +8,7 @@ use axum::{
 use serde_json::Value;
 use tracing::{error, info, warn};
 
-use crate::orm_gateway::ORMQuery;
+use platform_api_orm_gateway::ORMQuery;
 use crate::state::AppState;
 
 /// Create ORM router for validator routes (read-only)

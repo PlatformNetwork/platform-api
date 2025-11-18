@@ -1,0 +1,34 @@
+[package]
+name = "platform-api-challenge-runner"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Internal dependencies
+platform-api-models = { workspace = true }
+platform-api-websocket = { path = "../websocket" }
+platform-api-orm-gateway = { path = "../orm-gateway" }
+
+# Core dependencies
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid"] }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Utilities
+futures = { workspace = true }
+

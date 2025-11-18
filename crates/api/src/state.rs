@@ -1,6 +1,6 @@
 use crate::challenge_runner::ChallengeRunner;
 use crate::models::JobCache;
-use crate::orm_gateway::{ORMGatewayConfig, SecureORMGateway};
+use platform_api_orm_gateway::{ORMGatewayConfig, SecureORMGateway};
 use crate::redis_client::RedisClient;
 use crate::security::PlatformSecurity;
 use crate::services::{BittensorService, DstackVerifierClient};
@@ -366,7 +366,7 @@ impl AppState {
         for challenge in &mut challenges {
             mechanism_challenges
                 .entry(challenge.mechanism_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(challenge);
         }
 

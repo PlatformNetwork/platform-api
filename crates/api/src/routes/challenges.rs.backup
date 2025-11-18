@@ -487,8 +487,7 @@ pub async fn debug_challenges(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-        if let Some(row) = row {
-            Some(serde_json::json!({
+        row.map(|row| serde_json::json!({
                 "id": row.get::<uuid::Uuid, _>("id"),
                 "name": row.get::<String, _>("name"),
                 "compose_hash": row.get::<String, _>("compose_hash"),
@@ -496,9 +495,6 @@ pub async fn debug_challenges(
                 "mechanism_id": row.get::<i16, _>("mechanism_id"),
                 "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
             }))
-        } else {
-            None
-        }
     } else {
         None
     };

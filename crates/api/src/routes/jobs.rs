@@ -48,7 +48,7 @@ pub async fn create_job(
     Json(request): Json<CreateJobRequest>,
 ) -> Result<Json<JobMetadata>, StatusCode> {
     // Clone the request data we need before moving it
-    let challenge_id = request.challenge_id.clone();
+    let challenge_id = request.challenge_id;
     let payload = request.payload.clone();
 
     // Create the job in the scheduler

@@ -206,7 +206,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         );
 
         // Track challenges that are truly new (not in registry before clearing)
-        for (hash, _) in &new_challenges {
+        for hash in new_challenges.keys() {
             if !registry.contains_key(hash) {
                 new_or_changed.push(hash.clone());
             }
@@ -229,7 +229,7 @@ async fn sync_challenges_from_db(state: &AppState, pool: &PgPool) -> anyhow::Res
         if new_or_changed.is_empty() {
             debug!("No new challenges detected, but force-sync detected. Checking if challenges need to be started...");
             // Add all challenges to new_or_changed to ensure they're started
-            for (hash, _) in &new_challenges {
+            for hash in new_challenges.keys() {
                 new_or_changed.push(hash.clone());
             }
         }
