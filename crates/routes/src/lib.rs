@@ -2,7 +2,6 @@
 //!
 //! This crate contains all HTTP route handlers organized by functional area.
 
-pub mod artifacts;
 pub mod attestation;
 pub mod challenge_credentials;
 pub mod challenge_proxy;

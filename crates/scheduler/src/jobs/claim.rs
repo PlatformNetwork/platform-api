@@ -45,14 +45,6 @@ impl SchedulerService {
 
                 Ok(ClaimJobResponse {
                     job,
-                    harness: HarnessBundle {
-                        digest: Digest::from(""),
-                        size: 0,
-                        image_ref: None,
-                        manifest: None,
-                        config: HarnessConfig::default(),
-                    },
-                    datasets: vec![],
                     config: JobConfig {
                         timeout: self.config.job_timeout,
                         resources: ResourceLimits {
@@ -83,14 +75,6 @@ impl SchedulerService {
 
             Ok(ClaimJobResponse {
                 job: job.clone(),
-                harness: HarnessBundle {
-                    digest: Digest::from(""),
-                    size: 0,
-                    image_ref: None,
-                    manifest: None,
-                    config: HarnessConfig::default(),
-                },
-                datasets: vec![],
                 config: JobConfig {
                     timeout: self.config.job_timeout,
                     resources: ResourceLimits {
@@ -141,14 +125,6 @@ impl SchedulerService {
 
             Ok(ClaimJobResponse {
                 job,
-                harness: HarnessBundle {
-                    digest: Digest::from(""),
-                    size: 0,
-                    image_ref: None,
-                    manifest: None,
-                    config: HarnessConfig::default(),
-                },
-                datasets: vec![],
                 config: JobConfig {
                     timeout: self.config.job_timeout,
                     resources: ResourceLimits {
@@ -179,14 +155,6 @@ impl SchedulerService {
 
             Ok(ClaimJobResponse {
                 job: job.clone(),
-                harness: HarnessBundle {
-                    digest: Digest::from(""),
-                    size: 0,
-                    image_ref: None,
-                    manifest: None,
-                    config: HarnessConfig::default(),
-                },
-                datasets: vec![],
                 config: JobConfig {
                     timeout: self.config.job_timeout,
                     resources: ResourceLimits {

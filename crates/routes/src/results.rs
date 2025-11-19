@@ -85,12 +85,73 @@ pub async fn log_entry(
 }
 
 pub async fn submit_result(
-    _state: State<AppState>,
+    state: State<AppState>,
     Json(req): Json<ResultSubmitRequest>,
 ) -> Result<Json<ResultSubmitResponse>, StatusCode> {
-    let receipt = format!("result:{}:{}", req.session_token, Utc::now());
-    Ok(Json(ResultSubmitResponse {
-        stored: true,
-        receipt,
-    }))
+    // Try to extract job_id from session_token (format: "job_id:submission_id" or just job_id)
+    let job_id_str = req.session_token.split(':').next().unwrap_or(&req.session_token);
+    
+    let job_id = match uuid::Uuid::parse_str(job_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            tracing::warn!("Invalid job_id in session_token: {}", job_id_str);
+            // Try to find job by session_token in payload
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    // Convert ResultSubmitRequest to EvalResult format expected by scheduler
+    use std::collections::BTreeMap;
+    let metrics_clone = req.metrics.clone();
+    let eval_result = platform_api_models::EvalResult {
+        job_id,
+        submission_id: uuid::Uuid::parse_str(&req.session_token)
+            .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+        scores: {
+            let mut scores = BTreeMap::new();
+            scores.insert("score".to_string(), req.score);
+            // Add other metrics as scores
+            for (key, value) in metrics_clone.clone() {
+                scores.insert(key, value);
+            }
+            scores
+        },
+        metrics: metrics_clone.clone(),
+        logs: req.logs.clone(),
+        error: req.error.clone(),
+        execution_time: metrics_clone
+            .get("execution_time_ms")
+            .or_else(|| metrics_clone.get("execution_time"))
+            .map(|v| *v as u64)
+            .unwrap_or(0),
+        resource_usage: platform_api_models::ResourceUsage {
+            cpu_time: metrics_clone.get("cpu_time").map(|v| *v as u64).unwrap_or(0),
+            memory_peak: metrics_clone.get("memory_peak").map(|v| *v as u64).unwrap_or(0),
+            disk_usage: metrics_clone.get("disk_usage").map(|v| *v as u64).unwrap_or(0),
+            network_bytes: metrics_clone.get("network_bytes").map(|v| *v as u64).unwrap_or(0),
+        },
+        attestation_receipt: None,
+    };
+
+    let submit_request = platform_api_models::SubmitResultRequest {
+        job_id,
+        result: eval_result,
+        receipts: vec![format!("result:{}:{}", req.session_token, Utc::now())],
+    };
+
+    // Complete the job via scheduler
+    match state.scheduler.complete_job(job_id, submit_request).await {
+        Ok(_) => {
+            tracing::info!("Job {} completed successfully", job_id);
+            let receipt = format!("result:{}:{}", req.session_token, Utc::now());
+            Ok(Json(ResultSubmitResponse {
+                stored: true,
+                receipt,
+            }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to complete job {}: {}", job_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

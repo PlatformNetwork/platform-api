@@ -1,14 +1,41 @@
 use anyhow::{Context, Result};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use std::path::PathBuf;
+use hex;
+use serde_json;
 
 pub struct PlatformSecurity {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,
     compose_hash: String, // Hash of Docker Compose file (attested by TDX)
+    key_file: PathBuf,
 }
 
 impl PlatformSecurity {
     pub fn new() -> Result<Self> {
+        // Get key file path from environment or use default
+        let key_file = std::env::var("PLATFORM_SECURITY_KEY_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./security.key"));
+
+        // Try to load existing keys
+        if key_file.exists() {
+            match Self::load_keys_from_file(&key_file) {
+                Ok((signing_key, verifying_key, compose_hash)) => {
+                    tracing::info!("Loaded existing security keys from {}", key_file.display());
+                    return Ok(Self {
+                        signing_key,
+                        verifying_key,
+                        compose_hash,
+                        key_file,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load keys from {}: {}. Generating new keys.", key_file.display(), e);
+                }
+            }
+        }
+
         // Generate random compose hash (not verified, randomized)
         use rand::RngCore;
         let mut random_bytes = [0u8; 16];
@@ -20,7 +47,77 @@ impl PlatformSecurity {
             compose_hash
         );
 
-        Self::new_with_random_keys(&compose_hash)
+        let security = Self::new_with_random_keys(&compose_hash)?;
+        
+        // Save keys to file
+        if let Err(e) = security.save_keys_to_file() {
+            tracing::warn!("Failed to save keys to {}: {}", key_file.display(), e);
+        } else {
+            tracing::info!("Saved security keys to {}", key_file.display());
+        }
+
+        Ok(security)
+    }
+
+    fn load_keys_from_file(key_file: &PathBuf) -> Result<(SigningKey, VerifyingKey, String)> {
+        let contents = std::fs::read_to_string(key_file)
+            .context("Failed to read key file")?;
+        
+        let key_data: serde_json::Value = serde_json::from_str(&contents)
+            .context("Failed to parse key file JSON")?;
+        
+        let secret_key_hex = key_data["secret_key"]
+            .as_str()
+            .context("Missing secret_key in key file")?;
+        let secret_key_bytes = hex::decode(secret_key_hex)
+            .context("Failed to decode secret key hex")?;
+        
+        if secret_key_bytes.len() != 32 {
+            return Err(anyhow::anyhow!("Invalid secret key length: expected 32 bytes, got {}", secret_key_bytes.len()));
+        }
+        
+        let mut secret_key_array = [0u8; 32];
+        secret_key_array.copy_from_slice(&secret_key_bytes);
+        
+        let signing_key = SigningKey::from_bytes(&secret_key_array);
+        let verifying_key = signing_key.verifying_key();
+        
+        let compose_hash = key_data["compose_hash"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        
+        Ok((signing_key, verifying_key, compose_hash))
+    }
+
+    fn save_keys_to_file(&self) -> Result<()> {
+        let key_data = serde_json::json!({
+            "secret_key": hex::encode(self.signing_key.to_bytes()),
+            "public_key": hex::encode(self.verifying_key.to_bytes()),
+            "compose_hash": self.compose_hash,
+        });
+        
+        let contents = serde_json::to_string_pretty(&key_data)
+            .context("Failed to serialize key data")?;
+        
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = self.key_file.parent() {
+            std::fs::create_dir_all(parent)
+                .context("Failed to create key file directory")?;
+        }
+        
+        std::fs::write(&self.key_file, contents)
+            .context("Failed to write key file")?;
+        
+        // Set restrictive permissions (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.key_file, std::fs::Permissions::from_mode(0o600))
+                .context("Failed to set key file permissions")?;
+        }
+        
+        Ok(())
     }
 
     /// Initialize from TDX attestation or calculated compose hash (call this at startup)
@@ -42,6 +139,11 @@ impl PlatformSecurity {
 
     /// Generate random keys (not deterministic, not verified)
     pub fn new_with_random_keys(compose_hash: &str) -> Result<Self> {
+        // Get key file path from environment or use default
+        let key_file = std::env::var("PLATFORM_SECURITY_KEY_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./security.key"));
+
         // Generate random key pair (not deterministic)
         use rand::rngs::OsRng;
         use rand::RngCore;
@@ -80,6 +182,7 @@ impl PlatformSecurity {
             signing_key,
             verifying_key,
             compose_hash: compose_hash.to_string(),
+            key_file,
         })
     }
 

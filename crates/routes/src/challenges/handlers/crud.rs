@@ -59,8 +59,6 @@ pub async fn get_challenge(
 
         let response = ChallengeDetailResponse {
             metadata,
-            harness: None,
-            datasets: vec![],
             emissions: None,
         };
 

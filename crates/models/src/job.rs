@@ -54,8 +54,6 @@ pub struct ClaimJobRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaimJobResponse {
     pub job: JobMetadata,
-    pub harness: HarnessBundle,
-    pub datasets: Vec<DatasetArtifact>,
     pub config: JobConfig,
 }
 
@@ -148,4 +146,4 @@ pub struct JobStats {
     pub success_rate: f64,
 }
 
-use super::challenge::{DatasetArtifact, HarnessBundle, ResourceLimits};
+use super::challenge::ResourceLimits;

@@ -5,7 +5,7 @@ use platform_api_attestation::AttestationService;
 use platform_api_builder::BuilderService;
 use platform_api_kbs::KeyBrokerService;
 use platform_api_scheduler::SchedulerService;
-use platform_api_storage::{ArtifactStorage, StorageBackend};
+use platform_api_storage::StorageBackend;
 use std::sync::Arc;
 
 // Re-export config types
@@ -66,5 +66,4 @@ pub struct AppState {
     pub builder: Arc<BuilderService>,
     pub metrics: Arc<MetricsService>,
     pub config: Arc<AppConfig>,
-    pub artifact_storage: Arc<ArtifactStorage>,
 }

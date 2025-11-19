@@ -10,7 +10,7 @@ use platform_api_builder::BuilderService;
 use platform_api_kbs::KeyBrokerService;
 use platform_api_models::{ChallengeSpec, ValidatorChallengeStatus};
 use platform_api_scheduler::SchedulerService;
-use platform_api_storage::{ArtifactStorage, MemoryStorageBackend, StorageBackend};
+use platform_api_storage::{MemoryStorageBackend, StorageBackend};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,7 +26,6 @@ pub struct AppState {
     pub builder: Arc<BuilderService>,
     pub metrics: Arc<MetricsService>,
     pub config: Arc<AppConfig>,
-    pub artifact_storage: Arc<ArtifactStorage>,
     pub security: Arc<PlatformSecurity>,
     pub validator_connections: Arc<tokio::sync::RwLock<HashMap<String, ValidatorConnection>>>,
     pub challenge_registry: Arc<tokio::sync::RwLock<HashMap<String, ChallengeSpec>>>, // Key: compose_hash
@@ -143,7 +142,6 @@ impl AppState {
             database_pool.clone(),
         )?);
         let metrics = Arc::new(MetricsService::new(&config.metrics_config)?);
-        let artifact_storage = Arc::new(ArtifactStorage::new());
 
         // Initialize security
         tracing::info!("Initializing PlatformSecurity");
@@ -261,7 +259,6 @@ impl AppState {
             builder,
             metrics,
             config: Arc::new(config),
-            artifact_storage,
             security,
             validator_connections,
             challenge_registry,

@@ -33,16 +33,6 @@ pub struct ChallengeMetadata {
     pub tags: Vec<String>,
 }
 
-/// Harness bundle information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HarnessBundle {
-    pub digest: Digest,
-    pub size: u64,
-    pub image_ref: Option<String>,
-    pub manifest: Option<String>,
-    pub config: HarnessConfig,
-}
-
 /// Harness configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessConfig {
@@ -111,16 +101,6 @@ pub struct ResourceLimits {
     pub network_enabled: bool,
 }
 
-/// Dataset artifact information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatasetArtifact {
-    pub digest: Digest,
-    pub size: u64,
-    pub format: String,
-    pub compression: Option<String>,
-    pub checksum: String,
-}
-
 /// Challenge creation request
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateChallengeRequest {
@@ -154,8 +134,6 @@ pub struct ChallengeListResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChallengeDetailResponse {
     pub metadata: ChallengeMetadata,
-    pub harness: Option<HarnessBundle>,
-    pub datasets: Vec<DatasetArtifact>,
     pub emissions: Option<super::emissions::EmissionSchedule>,
 }
 

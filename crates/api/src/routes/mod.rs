@@ -1,4 +1,3 @@
-pub mod artifacts;
 pub mod attestation;
 pub mod challenge_credentials;
 pub mod challenge_proxy;
@@ -18,7 +17,6 @@ pub mod ui;
 pub mod validators;
 pub mod websocket;
 
-pub use artifacts::*;
 pub use attestation::*;
 pub use challenges::*;
 pub use config::*;

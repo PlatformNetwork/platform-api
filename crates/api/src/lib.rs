@@ -37,7 +37,6 @@ pub fn create_router(state: AppState) -> Router {
         // .merge(routes::pools::create_router())
         // .merge(routes::nodes::create_router())
         .merge(routes::ui::create_router())
-        .merge(routes::artifacts::create_router())
         .merge(routes::websocket::create_router())
         .merge(routes::challenge_credentials::create_router())
         .merge(routes::orm::create_router())

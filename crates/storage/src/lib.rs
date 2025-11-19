@@ -14,8 +14,6 @@ pub use config::*;
 mod encryption;
 pub use encryption::*;
 
-mod artifacts;
-pub use artifacts::*;
 
 mod postgres;
 pub use postgres::*;
