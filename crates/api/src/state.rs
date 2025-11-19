@@ -287,6 +287,12 @@ impl AppState {
         connections.get(hotkey).cloned()
     }
 
+    /// Get all validator connections
+    pub async fn get_all_validator_connections(&self) -> Vec<ValidatorConnection> {
+        let connections = self.validator_connections.read().await;
+        connections.values().cloned().collect()
+    }
+
     /// Remove a validator connection
     pub async fn remove_validator_connection(&self, hotkey: &str) {
         let mut connections = self.validator_connections.write().await;
